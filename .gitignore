@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.vercel/
+.tools/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+!.env.example
+server/.env
+npm-debug.log*
+*.log
