@@ -10,3 +10,5 @@ dist/
 server/.env
 npm-debug.log*
 *.log
+.vercel
+.env*
