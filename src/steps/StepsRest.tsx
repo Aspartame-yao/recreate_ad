@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
 import { useStore, useToast } from '../store'
 import type { AudioClip } from '../types'
-import { eraseSubtitleAndWait, exportDeliveryPackage, generateImage, generateTitles, renderComposition } from '../lib/museApi'
+import { downloadMediaFile, eraseSubtitleAndWait, exportDeliveryPackage, generateImage, generateTitles, queryVideo, renderComposition } from '../lib/museApi'
 import { extractJson } from '../lib/parseJson'
+import { archiveTaskMedia } from '../lib/taskApi'
 import { CheckCircle2, Download, Sparkles, X } from 'lucide-react'
 
 const uid = () => Math.random().toString(36).slice(2, 9)
@@ -22,14 +23,28 @@ export function Step3Process() {
     setBusy(b => ({ ...b, [id]: 1 }))
     dispatch({ type: 'setProcessError', id })
     try {
+      let mediaKitUrl = sh.sourceVideoUrl || sh.videoUrl
+      if (sh.sourceVideoTaskId) {
+        try {
+          const latest = await queryVideo(sh.sourceVideoTaskId)
+          mediaKitUrl = latest?.data?.video_url || latest?.video_url || latest?.data?.content?.video_url || latest?.content?.video_url || mediaKitUrl
+        } catch (e) {
+          console.warn('[refresh Seedance video URL]', e)
+        }
+      }
       let tick = 0
-      const r = await eraseSubtitleAndWait(sh.videoUrl, {
+      const r = await eraseSubtitleAndWait(mediaKitUrl, {
         intervalMs: 5000,
         onTick: () => { tick++; setBusy(b => ({ ...b, [id]: Math.min(94, 5 + tick * 7) })) },
       })
-      const url = r?.data?.video_url || r?.video_url || r?.data?.result_url || r?.result_url || r?.data?.content?.video_url || r?.content?.video_url
+      const url = r?.result?.video_url || r?.data?.result?.video_url || r?.data?.video_url || r?.video_url || r?.data?.result_url || r?.result_url || r?.data?.content?.video_url || r?.content?.video_url
       if (!url) throw new Error('字幕擦除完成但没有返回处理后视频地址')
-      dispatch({ type: 'setProcessedVideo', id, url, erased: true })
+      let savedUrl = url
+      if (state.taskId) {
+        try { savedUrl = (await archiveTaskMedia(state.taskId, url, `${sh.no}-processed.mp4`)).url }
+        catch (e) { console.warn('[archive processed video]', e) }
+      }
+      dispatch({ type: 'setProcessedVideo', id, url: savedUrl, erased: true })
       toast(`${sh.no} 字幕擦除完成 · 已进入处理结果区`)
     } catch (e: any) {
       const err = String(e?.message || e).slice(0, 160)
@@ -41,6 +56,10 @@ export function Step3Process() {
   }
   const eraseAll = async () => {
     for (const sh of targets.filter(s => !s.processedVideoUrl)) await eraseOne(sh.id)
+  }
+  const downloadProcessed = async (url: string, no: string) => {
+    try { await downloadMediaFile(url, `${no}-processed.mp4`) }
+    catch (e: any) { toast('下载失败：' + String(e?.message || e).slice(0, 160), { tone: 'warn' }) }
   }
 
   return (
@@ -66,7 +85,7 @@ export function Step3Process() {
       </div>
 
       <div className="process-result-head"><div><div className="process-title">处理结果</div><div className="process-note">字幕擦除等后处理完成的视频集中在这里；4.0 合成成片将优先使用这些结果。</div></div><span className="process-count">{processed.length} 个输出</span></div>
-      {processed.length ? <div className="process-result-grid">{processed.map(s => <article key={s.id} className="process-result-card"><div className="process-result-label">{s.no} · 已去字幕</div><video src={s.processedVideoUrl} controls playsInline preload="metadata" /><a href={s.processedVideoUrl} target="_blank" rel="noreferrer">⇩ 下载处理视频</a></article>)}</div> : <div className="process-empty">尚无处理结果。原料视频不会被覆盖，完成去字幕后会在此处出现独立的新视频。</div>}
+      {processed.length ? <div className="process-result-grid">{processed.map(s => <article key={s.id} className="process-result-card"><div className="process-result-label">{s.no} · 已去字幕</div><video src={s.processedVideoUrl} controls playsInline preload="metadata" /><button className="media-download" onClick={() => downloadProcessed(s.processedVideoUrl!, s.no)}>⇩ 下载处理视频</button></article>)}</div> : <div className="process-empty">尚无处理结果。原料视频不会被覆盖，完成去字幕后会在此处出现独立的新视频。</div>}
     </div>
   )
 }
@@ -78,6 +97,7 @@ export function Step4Compose() {
   const toast = useToast()
   const shots = state.shots
   const audioRef = useRef<HTMLInputElement>(null)
+  const playerRef = useRef<HTMLVideoElement>(null)
   const audioTrackRef = useRef<HTMLDivElement>(null)
   const [sel, setSel] = useState<string | null>(shots[0]?.id ?? null)
   const [audioModal, setAudioModal] = useState(false)      // Generation 弹窗
@@ -85,6 +105,7 @@ export function Step4Compose() {
   const [selAudio, setSelAudio] = useState<string | null>(null)   // 选中的音频片段（用于显示裁剪把手）
   const [audioMenu, setAudioMenu] = useState(false)               // 音轨 + 的上传/生成菜单
   const [playing, setPlaying] = useState(false)
+  const [muted, setMuted] = useState(false)
   const [playhead, setPlayhead] = useState(0) // 秒
   const raf = useRef<number>(0); const last = useRef<number>(0)
   const [dragIdx, setDragIdx] = useState<number | null>(null)   // 拖拽中的片段下标（仅用于视觉态）
@@ -99,7 +120,7 @@ export function Step4Compose() {
 
   // 播放头推进
   useEffect(() => {
-    if (!playing) return
+    if (!playing || state.compose.renderedVideoUrl) return
     last.current = performance.now()
     const tick = (now: number) => {
       const dt = (now - last.current) / 1000; last.current = now
@@ -108,13 +129,25 @@ export function Step4Compose() {
     }
     raf.current = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf.current)
-  }, [playing, totalDur])
+  }, [playing, totalDur, state.compose.renderedVideoUrl])
 
   // 当前播放头落在哪个片段
   const acc: { s: typeof shots[number]; x0: number; x1: number }[] = []
   { let x = 0; for (const s of shots) { const d = effDur(s); acc.push({ s, x0: x, x1: x + d }); x += d } }
   const activeClip = acc.find(a => playhead >= a.x0 && playhead < a.x1)?.s || selShot
   const previewShot = activeClip
+
+  useEffect(() => {
+    const video = playerRef.current
+    if (!video || state.compose.renderedVideoUrl || !activeClip) return
+    const slot = acc.find(a => a.s.id === activeClip.id)
+    if (!slot) return
+    const desired = activeClip.trimStart + Math.max(0, playhead - slot.x0) * activeClip.speed
+    video.playbackRate = activeClip.speed
+    if (Math.abs(video.currentTime - desired) > 0.35) video.currentTime = desired
+    if (playing) void video.play().catch(() => setPlaying(false))
+    else video.pause()
+  }, [activeClip?.id, playhead, playing, state.compose.renderedVideoUrl])
 
   // 新音频追加到音轨已有片段之后
   const nextAudioStart = () => state.compose.audios.reduce((mx, c) => Math.max(mx, c.start + (c.trimEnd - c.trimStart)), 0)
@@ -131,7 +164,7 @@ export function Step4Compose() {
     toast('音轨已置入')
   }
 
-  const fmt = (s: number) => `00:${String(Math.floor(s)).padStart(2, '0')}`
+  const fmt = (s: number) => `${String(Math.floor(Math.max(0, s) / 60)).padStart(2, '0')}:${String(Math.floor(Math.max(0, s)) % 60).padStart(2, '0')}`
   const ticks = Array.from({ length: Math.ceil(totalDur) + 1 }, (_, i) => i)
   const audioClips = state.compose.audios.filter(c => c.inTrack)
   const canRender = shots.length > 0 && shots.every(s => !!mediaUrl(s))
@@ -152,13 +185,27 @@ export function Step4Compose() {
       toast('合成失败：' + err, { tone: 'warn' })
     }
   }
+  const downloadRender = async () => {
+    if (!state.compose.renderedVideoUrl) return
+    try { await downloadMediaFile(state.compose.renderedVideoUrl, 'toushi-final.mp4') }
+    catch (e: any) { toast('下载失败：' + String(e?.message || e).slice(0, 160), { tone: 'warn' }) }
+  }
+  const togglePlayback = () => {
+    const video = playerRef.current
+    if (!video) return
+    if (video.paused) void video.play().then(() => setPlaying(true)).catch(() => setPlaying(false))
+    else { video.pause(); setPlaying(false) }
+  }
+  const toggleFullscreen = () => { if (playerRef.current?.requestFullscreen) void playerRef.current.requestFullscreen() }
 
   // 点时间轴定位播放头
   const seekAt = (e: React.MouseEvent) => {
     const el = e.currentTarget as HTMLElement
     const r = el.getBoundingClientRect()
     const x = (e.clientX - r.left) / r.width
-    setPlayhead(Math.max(0, Math.min(totalDur, x * totalDur)))
+    const next = Math.max(0, Math.min(totalDur, x * totalDur))
+    setPlayhead(next)
+    if (state.compose.renderedVideoUrl && playerRef.current) playerRef.current.currentTime = next
   }
 
   // 片段上拖拽裁剪：按片段块像素宽换算 trim 秒（片段块宽 = 全片 duration 的 trim 后有效段映射）
@@ -226,9 +273,13 @@ export function Step4Compose() {
       <div className="ed-stage">
         <div className="ed-screen">
           {state.compose.renderedVideoUrl
-            ? <video key={state.compose.renderedVideoUrl} src={state.compose.renderedVideoUrl} className="ed-frame" controls playsInline />
+            ? <video ref={playerRef} key={state.compose.renderedVideoUrl} src={state.compose.renderedVideoUrl} className="ed-frame" muted={muted} playsInline preload="metadata"
+                onLoadedMetadata={e => setPlayhead(Math.min(e.currentTarget.currentTime, totalDur))}
+                onTimeUpdate={e => setPlayhead(e.currentTarget.currentTime)}
+                onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
+                onEnded={() => { setPlaying(false); setPlayhead(totalDur) }} />
             : previewShot && mediaUrl(previewShot)
-            ? <video key={previewShot.id} src={mediaUrl(previewShot)} className="ed-frame" muted loop playsInline autoPlay={playing} />
+            ? <video ref={playerRef} key={previewShot.id} src={mediaUrl(previewShot)} className="ed-frame" muted={muted} playsInline preload="metadata" />
             : previewShot?.refs[0]
               ? <img src={previewShot.refs[0].url} alt="" className="ed-frame" />
               : <div className="ed-frame ed-ph"><span>{previewShot ? previewShot.no : '成片预览'}</span></div>}
@@ -236,11 +287,11 @@ export function Step4Compose() {
         <div className="ed-transport">
           <span className="ed-time">{fmt(playhead)} / {fmt(totalDur)}</span>
           <div className="ed-tbtns">
-            <button className="ed-play" onClick={() => setPlaying(p => !p)}>{playing ? '❙❙' : '▶'}</button>
+            <button className="ed-play" onClick={togglePlayback}>{playing ? '❙❙' : '▶'}</button>
           </div>
           <div className="ed-tright">
-            <button className="pv-icon" title="音量">🔊</button>
-            <button className="pv-icon" title="全屏" onClick={() => toast('全屏预览')}>⤢</button>
+            <button className="pv-icon" title={muted ? '打开声音' : '静音'} onClick={() => setMuted(v => !v)}>{muted ? '🔇' : '🔊'}</button>
+            <button className="pv-icon" title="全屏" onClick={toggleFullscreen}>⤢</button>
             <button className="btn btn--primary" style={{ padding: '7px 14px', fontSize: 13 }} onClick={runRender} disabled={!canRender || state.compose.renderStatus === 'running'}>{state.compose.renderStatus === 'running' ? '合成中…' : '▸ 合成成片'}</button>
           </div>
         </div>
@@ -367,7 +418,7 @@ export function Step4Compose() {
       {/* 底部操作条 */}
       <div className="ed-toolbar">
         <input ref={audioRef} type="file" accept="audio/*" hidden onChange={e => { const f = e.target.files?.[0]; if (f) uploadAudio(f); e.target.value = '' }} />
-        {state.compose.renderedVideoUrl && <a className="ed-render-download" href={state.compose.renderedVideoUrl} download="toushi-final.mp4">⇩ 下载合成 MP4</a>}
+        {state.compose.renderedVideoUrl && <button className="ed-render-download" onClick={downloadRender}>⇩ 下载合成 MP4</button>}
         {state.compose.renderStatus === 'failed' && <span className="ed-render-error">{state.compose.renderError}</span>}
         <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--color-ink-3)' }}>合计 {totalDur.toFixed(1)}s · {shots.length} 片段 · {audioClips.length} 音轨 · 字幕 {state.compose.subtitleOn ? `${state.compose.subs.length} 段` : '关'}</span>
       </div>
@@ -494,11 +545,16 @@ export function Step5Cover() {
   const genCover = async () => {
     setGenC(true); setCoverErr('')
     try {
-      const r = await generateImage({ model: 'doubao-seedream-5.0-lite', prompt: coverPrompt, aspect_ratio: coverAspect, size: coverAspect === '9:16' ? '1440x2560' : '2560x1440', watermark: false })
+      const r = await generateImage({ model: 'doubao-seedream-5-0-260128', prompt: coverPrompt, aspect_ratio: coverAspect, size: coverAspect === '9:16' ? '1440x2560' : '2560x1440', watermark: false })
       const url = imageUrlFromResult(r)
       if (!url) throw new Error('封面生成完成，但未返回可展示的图片地址：' + JSON.stringify(r).slice(0, 260))
+      let savedUrl = url
+      if (state.taskId) {
+        try { savedUrl = (await archiveTaskMedia(state.taskId, url, `cover-${Date.now()}.jpg`)).url }
+        catch (e) { console.warn('[archive cover]', e) }
+      }
       const label = `AI · ${strategy?.meta?.title || '成片封面'} · ${coverAspect}`
-      dispatch({ type: 'addCover', cover: { id: uid(), label, kind: 'ai', url, aspect: coverAspect } })
+      dispatch({ type: 'addCover', cover: { id: uid(), label, kind: 'ai', url: savedUrl, aspect: coverAspect } })
       toast('封面已生成')
     } catch (e: any) {
       const err = String(e?.message || e).slice(0, 220); setCoverErr(err); toast('封面生成失败：' + err, { tone: 'warn' })
@@ -521,19 +577,50 @@ export function Step5Cover() {
   const exportPackage = async () => {
     const cover = state.covers[state.cover]
     const title = state.titles[state.title]
-    if (!state.compose.renderedVideoUrl || !cover?.url || !title?.text) {
-      toast('请先完成成片合成，并选择封面和标题', { tone: 'warn' })
+    if (!cover?.url || !title?.text) {
+      toast('请先选择封面和标题', { tone: 'warn' })
       return
     }
+    if (exporting) return
     setExporting(true)
     try {
-      const r = await exportDeliveryPackage({ video_url: state.compose.renderedVideoUrl, cover_url: cover.url, title: title.text })
+      let renderedVideoUrl = state.compose.renderedVideoUrl
+      if (!renderedVideoUrl) {
+        const usableShots = state.shots.filter(s => s.processedVideoUrl || s.videoUrl)
+        if (!usableShots.length || usableShots.length !== state.shots.length) throw new Error('仍有分镜没有可合成的视频')
+        dispatch({ type: 'setRenderStatus', status: 'running' })
+        const rendered = await renderComposition({
+          clips: usableShots.map(s => {
+            const duration = s.generatedDuration || s.genDuration
+            return {
+              url: (s.processedVideoUrl || s.videoUrl)!,
+              trimStart: Math.min(s.trimStart, duration - 0.1),
+              trimEnd: Math.min(s.trimEnd, duration),
+              duration,
+              speed: s.speed,
+            }
+          }),
+          subtitleOn: state.compose.subtitleOn,
+          subtitles: state.compose.subs,
+        })
+        renderedVideoUrl = rendered.video_url
+        dispatch({ type: 'setRenderStatus', status: 'done', url: renderedVideoUrl })
+      }
+      const r = await exportDeliveryPackage({ video_url: renderedVideoUrl, cover_url: cover.url, title: title.text })
       setExportUrl(r.package_url)
-      toast('交付包已生成')
+      await downloadMediaFile(r.package_url, 'toushi-delivery.zip')
+      toast('交付包已生成并开始下载')
     } catch (e: any) {
+      if (!state.compose.renderedVideoUrl) dispatch({ type: 'setRenderStatus', status: 'failed', err: String(e?.message || e).slice(0, 180) })
       toast('交付包导出失败：' + String(e?.message || e).slice(0, 160), { tone: 'warn' })
     } finally { setExporting(false) }
   }
+
+  useEffect(() => {
+    const handleExport = () => { void exportPackage() }
+    window.addEventListener('toushi:export', handleExport)
+    return () => window.removeEventListener('toushi:export', handleExport)
+  })
 
   return (
     <div className="cover-page">
@@ -548,7 +635,7 @@ export function Step5Cover() {
         {titleErr && <div className="cover-error">{titleErr}</div>}
         {state.titles.map((t, k) => <div key={t.id} className={`title-opt ${state.title === k ? 'sel' : ''}`} onClick={() => dispatch({ type: 'setTitle', i: k })}><div className="t">{t.text}</div><div className="m">{t.ai ? '✦ ' : ''}{t.tag}</div></div>)}
         {!state.titles.length && <div className="cover-empty">尚未生成标题。生成后可从多个候选中选择。</div>}
-        <div className="panel cover-delivery"><div className="col-label">交付包</div><div><CheckCircle2 size={13} /> 成片 {state.compose.renderedVideoUrl ? <a href={state.compose.renderedVideoUrl} download="toushi-final.mp4">下载合成 MP4</a> : '尚未合成'}<br /><CheckCircle2 size={13} /> 封面 {state.covers[state.cover]?.label || '尚未选择'}<br /><CheckCircle2 size={13} /> 标题「{state.titles[state.title]?.text || '尚未选择'}」</div><button className="btn btn--primary btn-with-icon" onClick={exportPackage} disabled={exporting}>{!exporting && <Download size={15} />}{exporting ? '打包中…' : '导出交付包'}</button>{exportUrl && <a className="cover-package-link" href={exportUrl} download="toushi-delivery.zip"><Download size={14} />下载交付包 ZIP</a>}</div>
+        <div className="panel cover-delivery"><div className="col-label">交付包</div><div><CheckCircle2 size={13} /> 成片 {state.compose.renderedVideoUrl ? <button className="inline-download" onClick={() => downloadMediaFile(state.compose.renderedVideoUrl!, 'toushi-final.mp4')}>下载合成 MP4</button> : '导出时自动合成'}<br /><CheckCircle2 size={13} /> 封面 {state.covers[state.cover]?.label || '尚未选择'}<br /><CheckCircle2 size={13} /> 标题「{state.titles[state.title]?.text || '尚未选择'}」</div><button className="btn btn--primary btn-with-icon" onClick={exportPackage} disabled={exporting}>{!exporting && <Download size={15} />}{exporting ? '合成并打包中…' : '导出并下载交付包'}</button>{exportUrl && <button className="cover-package-link link-button" onClick={() => downloadMediaFile(exportUrl, 'toushi-delivery.zip')}><Download size={14} />再次下载交付包 ZIP</button>}</div>
       </section>
     </div>
   )

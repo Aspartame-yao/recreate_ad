@@ -20,6 +20,7 @@ import {
 } from './muse.mjs'
 import { BREAKDOWN_STRATEGY_SYSTEM_PROMPT_COMPACT, ANALYZE_SHOT_SYSTEM_PROMPT_COMPACT, ASR_TRANSCRIPTION_SYSTEM_PROMPT } from './skills.mjs'
 import { createTask, deleteTask, getTask, listTasks, saveTaskMedia, taskMediaPath, taskMediaUrl, updateTask } from './taskStore.mjs'
+import { createSubject, deleteSubject, getSubject, listSubjects, saveSubjectMedia, subjectMediaPath, subjectMediaUrl, updateSubject, upsertAnalyzedSubjects } from './subjectStore.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -44,10 +45,74 @@ loadEnv(path.join(ROOT, '.env'))
 const PORT = Number(process.env.PORT || 4322)
 const REVERSE_MODEL = 'doubao-seed-2-1-pro-260628'
 const MODELS = {
-  chat: process.env.MODEL_CHAT || 'gpt-5.5',
+  chat: process.env.MODEL_CHAT || REVERSE_MODEL,
   reverse: REVERSE_MODEL,
-  image: process.env.MODEL_IMAGE || 'doubao-seedream-5.0-lite',
-  video: process.env.MODEL_VIDEO || 'doubao-seedance-2-0-260128',
+  image: process.env.MODEL_IMAGE || 'doubao-seedream-5-0-260128',
+  video: process.env.MODEL_VIDEO || 'doubao-seedance-2-0-mini-260615',
+}
+
+const AUTH_COOKIE = 'toushi_session'
+const AUTH_TTL_SECONDS = 7 * 24 * 60 * 60
+const LOGIN_ATTEMPTS = new Map()
+
+function authConfig() {
+  return {
+    username: String(process.env.APP_LOGIN_USERNAME || '').trim(),
+    password: String(process.env.APP_LOGIN_PASSWORD || ''),
+    secret: String(process.env.AUTH_SECRET || ''),
+  }
+}
+function authReady() {
+  const config = authConfig()
+  return config.username.length >= 3 && config.password.length >= 8 && config.secret.length >= 32
+}
+function safeEqual(a, b) {
+  const left = crypto.createHash('sha256').update(String(a)).digest()
+  const right = crypto.createHash('sha256').update(String(b)).digest()
+  return crypto.timingSafeEqual(left, right)
+}
+function signSession(payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url')
+  const signature = crypto.createHmac('sha256', authConfig().secret).update(body).digest('base64url')
+  return `${body}.${signature}`
+}
+function readCookies(req) {
+  return Object.fromEntries(String(req.headers.cookie || '').split(';').map(part => part.trim()).filter(Boolean).map(part => {
+    const index = part.indexOf('=')
+    return index > 0 ? [decodeURIComponent(part.slice(0, index)), decodeURIComponent(part.slice(index + 1))] : [part, '']
+  }))
+}
+function sessionUser(req) {
+  if (!authReady()) return null
+  const token = readCookies(req)[AUTH_COOKIE]
+  if (!token) return null
+  const [body, signature] = token.split('.')
+  if (!body || !signature) return null
+  const expected = crypto.createHmac('sha256', authConfig().secret).update(body).digest('base64url')
+  if (!safeEqual(signature, expected)) return null
+  try {
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'))
+    if (payload.exp < Math.floor(Date.now() / 1000) || payload.username !== authConfig().username) return null
+    return { username: payload.username }
+  } catch { return null }
+}
+function requestIp(req) {
+  return String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown').split(',')[0].trim()
+}
+function loginRateLimit(req) {
+  const key = requestIp(req)
+  const now = Date.now()
+  const current = LOGIN_ATTEMPTS.get(key)
+  if (!current || current.resetAt <= now) {
+    const next = { count: 0, resetAt: now + 15 * 60 * 1000 }
+    LOGIN_ATTEMPTS.set(key, next)
+    return next
+  }
+  return current
+}
+function sessionCookie(req, token, maxAge = AUTH_TTL_SECONDS) {
+  const secure = process.env.VERCEL || String(req.headers['x-forwarded-proto'] || '').includes('https')
+  return `${AUTH_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure ? '; Secure' : ''}`
 }
 
 function resolveFfmpegPath() {
@@ -93,12 +158,13 @@ const MIME = {
   '.woff2': 'font/woff2',
 }
 
-function json(res, code, data) {
+function json(res, code, data, extraHeaders = {}) {
   res.writeHead(code, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'same-origin',
+    ...extraHeaders,
   })
   res.end(JSON.stringify(data))
 }
@@ -144,15 +210,10 @@ const MIME_BY_EXT = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif',
 }
 
-// gemini（Vertex AI）内联视频体积上限。经 aimixer 线上验证 30MB 稳定可用，
-// 超过则 gemini 侧会拒绝或超时。裁剪时已限制时长，通常不会触及。
+// 方舟多模态请求的内联视频体积上限。裁剪时已限制时长，通常不会触及。
 const INLINE_MAX_BYTES = 40 * 1024 * 1024
 
-// ⚠️ 视频反推的核心策略：把本机 uploads 里的视频读成 data:base64 内联给 gemini，
-// 而【不是】给它一个公网 URL。原因：gemini 后端是境外 Vertex AI，它抓取远程 URL
-// 需要 URL 在【境外公网可达】。本 CVM（devcloud）的公网出口对境外不可达，
-// 拼任何 http://<ip>:<port>/uploads/xxx 都会报 URL_UNREACHABLE / robots error。
-// 内联 base64 不需要 gemini 做任何网络抓取，直接消费数据 —— 这是 aimixer 已验证可用的路径。
+// 视频反推优先把本机 uploads 里的视频读成 data:base64，避免上游无法访问本地 URL。
 // 入参可以是 uploads 文件名（如 up_xxx.mp4）或本机 uploads 的完整 URL。
 function inlineLocalVideoAsDataUrl(videoRef) {
   if (!videoRef || typeof videoRef !== 'string') return null
@@ -169,7 +230,14 @@ function inlineLocalVideoAsDataUrl(videoRef) {
     const pm = videoRef.match(/\/api\/video\/preview\/([A-Za-z0-9_-]+)/)
     if (pm) abs = resolveVideoPath(pm[1])
   }
-  // 3) 回退：老的 uploads 目录（裸文件名或 /uploads/xxx URL）
+  // 3) 任务媒体中的持久化原片/裁剪片。历史任务重开后仍需能直接重新解析。
+  if (!abs) {
+    let pathname = ''
+    try { pathname = new URL(videoRef, 'http://local').pathname } catch {}
+    const tm = pathname.match(/^\/api\/task-media\/([A-Za-z0-9_-]{8,80})\/([^/]+)$/)
+    if (tm) abs = taskMediaPath(tm[1], decodeURIComponent(tm[2]))
+  }
+  // 4) 回退：老的 uploads 目录（裸文件名或 /uploads/xxx URL）
   if (!abs) {
     let name = null
     const m = videoRef.match(/\/uploads\/([A-Za-z0-9._-]+)$/)
@@ -307,7 +375,7 @@ async function transcribeVideoWithWhisper(videoPath) {
   }
 }
 
-// —— ffmpeg 重编码裁剪（x264+aac，veryfast），输出 mp4 兼容 gemini 视频理解
+// —— ffmpeg 重编码裁剪（x264+aac，veryfast），输出 mp4 供方舟视频理解
 // 时长上限放宽到 180s 后，长片段用 CRF 可能超过内联上限。改为按时长自适应：
 //   · ≤60s：CRF 23 原分辨率（画质优先，体积一定不超）
 //   · >60s：限长边 720 + 视频码率上限，使 180s 片段稳定落在内联上限内
@@ -342,7 +410,7 @@ function ffmpegTrim(srcPath, destPath, start, duration) {
   })
 }
 
-// —— 读裁剪后的小片段转 data:base64 内联（供 gemini 反推；不给公网 URL）
+// —— 读裁剪后的小片段转 data:base64 内联供方舟反推
 function inlineTrimmedVideo(trimmedId) {
   const fp = resolveVideoPath(trimmedId)
   if (!fp) throw Object.assign(new Error('裁剪片段已过期或不存在，请重新上传并裁剪'), { status: 404 })
@@ -371,9 +439,9 @@ function inlineTaskReferenceImage(ref) {
   if (String(ref || '').startsWith('data:image/')) return String(ref)
   let pathname = ''
   try { pathname = new URL(String(ref), 'http://local').pathname } catch {}
-  const match = pathname.match(/^\/api\/task-media\/([A-Za-z0-9_-]{8,80})\/(.+)$/)
+  const match = pathname.match(/^\/api\/(task|subject)-media\/([A-Za-z0-9_-]{8,80})\/(.+)$/)
   if (!match) return String(ref || '')
-  const file = taskMediaPath(match[1], decodeURIComponent(match[2]))
+  const file = match[1] === 'subject' ? subjectMediaPath(match[2], decodeURIComponent(match[3])) : taskMediaPath(match[2], decodeURIComponent(match[3]))
   if (!file) throw Object.assign(new Error('参考图文件不存在，请重新上传'), { status: 404 })
   const stat = fs.statSync(file)
   if (stat.size > 10 * 1024 * 1024) throw Object.assign(new Error('单张参考图不能超过 10MB'), { status: 413 })
@@ -383,7 +451,7 @@ function inlineTaskReferenceImage(ref) {
 
 // 视频反推、整片策略分析、单镜分析均固定使用同一个豆包模型，不允许模型降级。
 // 这样每份分析结果都可追溯到 doubao-seed-2-1-pro-260628；上游若拒绝视频承载格式，
-// 直接返回上游错误，绝不悄悄切换 Gemini 把失败伪装成成功。
+// 直接返回上游错误，不切换其他模型。
 function assertReverseModel(model) {
   if (model && model !== REVERSE_MODEL) {
     throw Object.assign(new Error(`视频反推模型已锁定为 ${REVERSE_MODEL}，不允许覆盖为 ${model}`), { status: 400 })
@@ -442,12 +510,21 @@ function normalizeStrategyJson(raw) {
       asr_text: String(seg.asr_text || ''),
       voiceover_script: String(seg.asr_text || ''),
       role_note: String(seg.role_note || ''), merge_reason: String(seg.merge_reason || ''),
+      subject_names: Array.isArray(seg.subject_names) ? seg.subject_names.map(String).filter(Boolean).slice(0, 8) : [],
     }
   })
   const hooks = source.strategy?.attention_hooks || {}
   return {
     meta: { title: String(source.meta?.title || '视频拆镜策略'), total_duration_s: Number(source.meta?.total_duration_s) || strategySeconds(segments.at(-1)?.end), aspect: String(source.meta?.aspect || '9:16'), routine: String(source.meta?.routine || ''), segment_count: segments.length, disclaimer: String(source.meta?.disclaimer || '') },
     strategy: { core_selling_point: String(source.strategy?.core_selling_point || ''), expression_style: String(source.strategy?.expression_style || ''), shot_logic: String(source.strategy?.shot_logic || ''), narrative_structure: String(source.strategy?.narrative_structure || ''), attention_hooks: { pre_roll: String(hooks.pre_roll || ''), mid_roll: String(hooks.mid_roll || ''), end_roll: String(hooks.end_roll || '') } },
+    subjects: Array.isArray(source.subjects) ? source.subjects.map((subject, i) => ({
+      name: String(subject?.name || `主体${i + 1}`).slice(0, 30),
+      type: ['person', 'product', 'scene', 'other'].includes(subject?.type) ? subject.type : subject?.type === 'character' ? 'other' : 'other',
+      description: String(subject?.description || '').slice(0, 240),
+      voice_hint: String(subject?.voice_hint || '').slice(0, 160),
+      image_prompt: String(subject?.image_prompt || '').slice(0, 500),
+      segment_indices: Array.isArray(subject?.segment_indices) ? subject.segment_indices.map(Number).filter(Number.isFinite) : [],
+    })).filter(subject => subject.name).slice(0, 12) : [],
     segments,
     remake: { anchors: Array.isArray(source.remake?.anchors) ? source.remake.anchors.map(String) : [], variables: Array.isArray(source.remake?.variables) ? source.remake.variables.map(String) : [], production_tips: Array.isArray(source.remake?.production_tips) ? source.remake.production_tips.map(String) : [], cautions: Array.isArray(source.remake?.cautions) ? source.remake.cautions.map(String) : [] },
   }
@@ -584,14 +661,15 @@ async function handleVideoImportUrl(req, res, body) {
 // —— POST /api/video/trim  body:{raw_id,start,end} → ffmpeg 裁剪 → trimmed_id
 async function handleVideoTrim(req, res, body) {
   const rawId = String(body?.raw_id || '').trim()
+  const sourceUrl = String(body?.source_url || '').trim()
   const start = Number(body?.start), end = Number(body?.end)
-  if (!rawId) return json(res, 400, { ok: false, error: 'raw_id 不能为空' })
+  if (!rawId && !sourceUrl) return json(res, 400, { ok: false, error: 'raw_id / source_url 不能为空' })
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return json(res, 400, { ok: false, error: '裁剪区间不合法' })
   const dur = end - start
   if (dur < TRIM_MIN_DURATION_SEC - 0.01 || dur > TRIM_MAX_DURATION_SEC + 0.01) {
     return json(res, 400, { ok: false, error: `裁剪时长应在 ${TRIM_MIN_DURATION_SEC}~${TRIM_MAX_DURATION_SEC} 秒之间` })
   }
-  const srcPath = resolveVideoPath(rawId)
+  const srcPath = resolveVideoPath(rawId) || localMediaPath(sourceUrl)
   if (!srcPath) return json(res, 404, { ok: false, error: '原视频已过期或不存在，请重新上传' })
   touchVideoFile(srcPath)
   const trimmedId = genVideoId()
@@ -610,10 +688,11 @@ async function handleVideoTrim(req, res, body) {
 // 输出的 mm:ss 转成相对裁剪片段的秒数，这里不做任何时间基准转换，只管按秒裁。
 async function handleVideoSplitSegments(req, res, body) {
   const sourceId = String(body?.source_id || '').trim()
+  const sourceUrl = String(body?.source_url || '').trim()
   const segments = Array.isArray(body?.segments) ? body.segments : []
-  if (!sourceId) return json(res, 400, { ok: false, error: 'source_id 不能为空' })
+  if (!sourceId && !sourceUrl) return json(res, 400, { ok: false, error: 'source_id / source_url 不能为空' })
   if (!segments.length) return json(res, 400, { ok: false, error: 'segments 不能为空' })
-  const srcPath = resolveVideoPath(sourceId)
+  const srcPath = resolveVideoPath(sourceId) || localMediaPath(sourceUrl)
   if (!srcPath) return json(res, 404, { ok: false, error: '源视频已过期或不存在，请重新上传/裁剪' })
   touchVideoFile(srcPath)
 
@@ -668,7 +747,8 @@ function handleVideoPreview(req, res) {
 }
 
 // —— 成片合成：下载复刻片段，按时间轴裁剪/变速，ffmpeg 拼接并将字幕烧录进 MP4。
-const RENDER_DIR = path.join(UPLOADS, 'renders')
+const PERSISTENT_DATA_DIR = process.env.TOUSHI_DATA_DIR || path.join(os.tmpdir(), 'toushi-app-data')
+const RENDER_DIR = path.join(PERSISTENT_DATA_DIR, 'renders')
 try { fs.mkdirSync(RENDER_DIR, { recursive: true }) } catch {}
 
 function runFfmpeg(args) {
@@ -703,6 +783,24 @@ async function downloadMedia(url, dest) {
   if (buf.length > 300 * 1024 * 1024) throw new Error('媒体超过 300MB 合成上限')
   fs.writeFileSync(dest, buf)
 }
+function localMediaPath(value) {
+  let pathname = ''
+  try { pathname = new URL(String(value || ''), 'http://local').pathname } catch { return null }
+  const taskMatch = pathname.match(/^\/api\/task-media\/([A-Za-z0-9_-]{8,80})\/([^/]+)$/)
+  if (taskMatch) return taskMediaPath(taskMatch[1], decodeURIComponent(taskMatch[2]))
+  const subjectMatch = pathname.match(/^\/api\/subject-media\/([A-Za-z0-9_-]{8,80})\/([^/]+)$/)
+  if (subjectMatch) return subjectMediaPath(subjectMatch[1], decodeURIComponent(subjectMatch[2]))
+  if (pathname.startsWith('/uploads/')) {
+    const candidate = path.join(UPLOADS, decodeURIComponent(pathname.slice('/uploads/'.length)))
+    if (candidate.startsWith(UPLOADS) && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate
+  }
+  return null
+}
+async function materializeMedia(req, value, dest) {
+  const local = localMediaPath(value)
+  if (local) { fs.copyFileSync(local, dest); return }
+  await downloadMedia(absoluteMediaUrl(req, value), dest)
+}
 async function handleComposeRender(req, res, body) {
   const clips = Array.isArray(body?.clips) ? body.clips.filter(c => c?.url) : []
   const subtitles = body?.subtitleOn && Array.isArray(body?.subtitles) ? body.subtitles.filter(s => s?.text && Number(s.end) > Number(s.start)) : []
@@ -711,23 +809,36 @@ async function handleComposeRender(req, res, body) {
   const renderId = genVideoId()
   const output = path.join(RENDER_DIR, `${renderId}.mp4`)
   try {
-    const normalized = []
+    const sources = []
     for (let i = 0; i < clips.length; i++) {
       const c = clips[i]
       const source = path.join(work, `source-${i}.mp4`)
-      await downloadMedia(absoluteMediaUrl(req, c.url), source)
+      await materializeMedia(req, c.url, source)
+      sources.push(source)
+    }
+    const merged = path.join(work, 'merged.mp4')
+    const fastCopy = subtitles.length === 0 && clips.every(c => {
       const start = Math.max(0, Number(c.trimStart) || 0)
-      const duration = Math.max(0.2, Number(c.trimEnd) - start || Number(c.duration) || 1)
-      const speed = Math.min(2, Math.max(0.5, Number(c.speed) || 1))
-      const prepared = path.join(work, `clip-${i}.mp4`)
-      // 保留每个复刻片段原生音轨；速度调整时至少保证视频时长正确，音频可由后续音轨覆盖。
-      await runFfmpeg(['-y', '-ss', String(start), '-i', source, '-t', String(duration), '-filter:v', `setpts=PTS/${speed}`, '-map', '0:v:0', '-map', '0:a?', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'aac', '-movflags', '+faststart', prepared])
-      normalized.push(prepared)
+      const end = Number(c.trimEnd) || Number(c.duration) || 0
+      const duration = Number(c.duration) || end
+      return Math.abs(Number(c.speed || 1) - 1) < 0.001 && start < 0.05 && end >= duration - 0.05
+    })
+    let prepared = sources
+    if (!fastCopy) {
+      prepared = []
+      for (let i = 0; i < clips.length; i++) {
+        const c = clips[i]
+        const start = Math.max(0, Number(c.trimStart) || 0)
+        const duration = Math.max(0.2, Number(c.trimEnd) - start || Number(c.duration) || 1)
+        const speed = Math.min(2, Math.max(0.5, Number(c.speed) || 1))
+        const file = path.join(work, `clip-${i}.mp4`)
+        await runFfmpeg(['-y', '-ss', String(start), '-i', sources[i], '-t', String(duration), '-filter:v', `setpts=PTS/${speed}`, '-map', '0:v:0', '-map', '0:a?', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'aac', '-movflags', '+faststart', file])
+        prepared.push(file)
+      }
     }
     const concatList = path.join(work, 'concat.txt')
-    fs.writeFileSync(concatList, normalized.map(f => `file '${f.replace(/'/g, "'\\''")}'`).join('\n'))
-    const merged = path.join(work, 'merged.mp4')
-    await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', concatList, '-c', 'copy', '-movflags', '+faststart', merged])
+    fs.writeFileSync(concatList, prepared.map(f => `file '${f.replace(/'/g, "'\\''")}'`).join('\n'))
+    await runFfmpeg(['-y', '-fflags', '+genpts', '-f', 'concat', '-safe', '0', '-i', concatList, '-c', 'copy', '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart', merged])
     if (subtitles.length) {
       const srt = path.join(work, 'subtitles.srt')
       fs.writeFileSync(srt, subtitles.map((s, i) => `${i + 1}\n${toSrtTime(s.start)} --> ${toSrtTime(s.end)}\n${String(s.text).replace(/\r?\n/g, ' ')}\n`).join('\n'), 'utf8')
@@ -735,7 +846,7 @@ async function handleComposeRender(req, res, body) {
     } else {
       fs.copyFileSync(merged, output)
     }
-    console.log(`[compose] ok render=${renderId} clips=${clips.length} subtitles=${subtitles.length}`)
+    console.log(`[compose] ok render=${renderId} clips=${clips.length} subtitles=${subtitles.length} mode=${fastCopy ? 'stream-copy' : 'normalized'}`)
     return json(res, 200, { ok: true, video_url: `/uploads/renders/${renderId}.mp4`, render_id: renderId })
   } finally {
     try { fs.rmSync(work, { recursive: true, force: true }) } catch {}
@@ -744,7 +855,7 @@ async function handleComposeRender(req, res, body) {
 
 function runZip(dest, files) {
   return new Promise((resolve, reject) => {
-    const child = spawn('zip', ['-j', dest, ...files], { stdio: ['ignore', 'ignore', 'pipe'] })
+    const child = spawn('zip', ['-0', '-j', dest, ...files], { stdio: ['ignore', 'ignore', 'pipe'] })
     let stderr = ''
     child.stderr.on('data', d => { stderr += d.toString() })
     child.on('error', e => reject(new Error(`zip 启动失败：${e.message}`)))
@@ -763,8 +874,7 @@ async function handleExportPackage(req, res, body) {
     const video = path.join(work, 'final-video.mp4')
     const cover = path.join(work, 'cover.jpg')
     const manifest = path.join(work, 'delivery.json')
-    await downloadMedia(absoluteMediaUrl(req, videoUrl), video)
-    await downloadMedia(absoluteMediaUrl(req, coverUrl), cover)
+    await Promise.all([materializeMedia(req, videoUrl, video), materializeMedia(req, coverUrl, cover)])
     fs.writeFileSync(manifest, JSON.stringify({ title, video: 'final-video.mp4', cover: 'cover.jpg', exported_at: new Date().toISOString() }, null, 2))
     await runZip(zipPath, [video, cover, manifest])
     console.log(`[export] ok package=${packageId}`)
@@ -772,6 +882,26 @@ async function handleExportPackage(req, res, body) {
   } finally {
     try { fs.rmSync(work, { recursive: true, force: true }) } catch {}
   }
+}
+
+async function handleExportDownload(req, res, body) {
+  const source = String(body?.url || '').trim()
+  if (!source) return json(res, 400, { error: '下载地址不能为空' })
+  const requestedName = path.basename(String(body?.filename || 'download.bin')).replace(/[^\w.\-\u4e00-\u9fff]/g, '_') || 'download.bin'
+  const work = path.join(os.tmpdir(), `toushi-download-${genVideoId()}`)
+  try {
+    await materializeMedia(req, source, work)
+    const ext = path.extname(requestedName).toLowerCase()
+    const contentType = MIME[ext] || MIME_BY_EXT[ext] || 'application/octet-stream'
+    const data = fs.readFileSync(work)
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': data.length,
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(requestedName)}`,
+      'X-Content-Type-Options': 'nosniff',
+    })
+    return res.end(data)
+  } finally { try { fs.unlinkSync(work) } catch {} }
 }
 
 function publicBase(req) {
@@ -808,6 +938,47 @@ async function handleTaskReferenceUpload(req, res, taskId) {
   const relativeUrl = taskMediaUrl(taskId, saved.file)
   return json(res, 200, { ok: true, id: saved.file, name: saved.name, bytes: saved.bytes, url: relativeUrl, public_url: `${publicBase(req)}${relativeUrl}` })
 }
+async function handleSubjectImageUpload(req, res, subjectId) {
+  const subject = getSubject(subjectId)
+  if (!subject) return json(res, 404, { error: '主体不存在' })
+  if ((subject.images || []).length >= 3) return json(res, 400, { error: '每个主体最多 3 张图片' })
+  const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase()
+  if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(contentType)) return json(res, 400, { error: '仅支持 PNG、JPG、WebP 或 GIF' })
+  const buf = await readRawBody(req, 20 * 1024 * 1024)
+  const filename = decodeURIComponent(String(req.headers['x-filename'] || `subject${EXT_BY_MIME[contentType] || '.jpg'}`))
+  const saved = saveSubjectMedia(subjectId, filename, buf)
+  const url = subjectMediaUrl(subjectId, saved.file)
+  const image = { id: saved.file, name: saved.name, url, publicUrl: `${publicBase(req)}${url}` }
+  const updated = updateSubject(subjectId, { images: [...(subject.images || []), image] })
+  return json(res, 200, { subject: updated, image })
+}
+async function handleSubjectArchive(req, res, subjectId, body) {
+  const subject = getSubject(subjectId)
+  if (!subject) return json(res, 404, { error: '主体不存在' })
+  if ((subject.images || []).length >= 3) return json(res, 400, { error: '每个主体最多 3 张图片' })
+  const source = String(body?.url || '').trim(); if (!source) return json(res, 400, { error: '图片地址不能为空' })
+  const work = path.join(os.tmpdir(), `toushi-subject-${genVideoId()}`)
+  try {
+    await downloadMedia(absoluteMediaUrl(req, source), work)
+    const saved = saveSubjectMedia(subjectId, body?.name || 'generated-subject.jpg', fs.readFileSync(work))
+    const url = subjectMediaUrl(subjectId, saved.file)
+    const image = { id: saved.file, name: saved.name, url, publicUrl: `${publicBase(req)}${url}` }
+    const updated = updateSubject(subjectId, { images: [...(subject.images || []), image] })
+    return json(res, 200, { subject: updated, image })
+  } finally { try { fs.unlinkSync(work) } catch {} }
+}
+async function handleSubjectAnalyze(req, res, body) {
+  const imageUrl = String(body?.image_url || '').trim(); if (!imageUrl) return json(res, 400, { error: '请先上传或生成主体图片' })
+  const data = await chatWithMedia({
+    model: REVERSE_MODEL,
+    image_url: inlineTaskReferenceImage(imageUrl),
+    system: '你是主体资产标注员。只输出严格 JSON：{"description":"","suggested_name":"","suggested_type":"person|product|scene|other","voice_hint":""}。description 用中文准确描述可供后续生图保持一致的颜色、外形、材质、服饰和标志特征，不写背景。人物可推荐 voice_hint，其他类型留空。',
+    prompt: '请解析这张主体图片的稳定识别特征。', temperature: 0.2, response_format: { type: 'json_object' }, thinking: { type: 'disabled' },
+  })
+  const raw = data?.choices?.[0]?.message?.content ?? data?.data?.choices?.[0]?.message?.content ?? ''
+  const parsed = parseModelJson(raw); if (!parsed?.description) return json(res, 422, { error: 'AI 未返回可用的主体描述' })
+  return json(res, 200, parsed)
+}
 async function handleTaskArchive(req, res, taskId, body) {
   if (!getTask(taskId)) return json(res, 404, { error: '任务不存在' })
   const source = String(body?.url || '').trim()
@@ -817,15 +988,43 @@ async function handleTaskArchive(req, res, taskId, body) {
     await downloadMedia(absoluteMediaUrl(req, source), work)
     const name = String(body?.name || path.basename(new URL(absoluteMediaUrl(req, source)).pathname) || 'asset.mp4')
     const saved = saveTaskMedia(taskId, name, fs.readFileSync(work))
+    fs.writeFileSync(`${saved.path}.source.json`, JSON.stringify({
+      source_url: source,
+      source_task_id: String(body?.source_task_id || '').trim() || null,
+    }))
     const relativeUrl = taskMediaUrl(taskId, saved.file)
     return json(res, 200, { ok: true, id: saved.file, name: saved.name, bytes: saved.bytes, url: relativeUrl, public_url: `${publicBase(req)}${relativeUrl}` })
   } finally { try { fs.unlinkSync(work) } catch {} }
 }
 
+async function resolveMediaKitVideoUrl(value) {
+  const raw = String(value || '').trim()
+  if (/^(https?|mediakit|tos|vod):\/\//i.test(raw)) return raw
+  let pathname = raw
+  try { pathname = new URL(raw, 'http://local').pathname } catch {}
+  const match = pathname.match(/^\/api\/task-media\/([A-Za-z0-9_-]{8,80})\/([^/]+)$/)
+  if (!match) throw Object.assign(new Error('字幕擦除需要公网视频地址'), { status: 400 })
+  const file = taskMediaPath(match[1], decodeURIComponent(match[2]))
+  if (!file) throw Object.assign(new Error('归档视频不存在，请重新生成该分镜'), { status: 404 })
+  let source = null
+  try { source = JSON.parse(fs.readFileSync(`${file}.source.json`, 'utf8')) } catch {}
+  if (source?.source_task_id) {
+    const latest = await queryText2Video({ task_id: source.source_task_id })
+    if (latest?.video_url) return latest.video_url
+  }
+  if (/^(https?|mediakit|tos|vod):\/\//i.test(String(source?.source_url || ''))) return source.source_url
+  throw Object.assign(new Error('归档视频缺少 Seedance 来源记录，请重新生成该分镜'), { status: 400 })
+}
+
 function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`)
   let rel = decodeURIComponent(url.pathname)
-  // ⚠️ Vertex AI（gemini 后端）抓取远程视频前，会先请求 /robots.txt。
+  if (rel.startsWith('/uploads/renders/')) {
+    const name = path.basename(rel)
+    const file = path.join(RENDER_DIR, name)
+    if (file.startsWith(RENDER_DIR) && fs.existsSync(file) && fs.statSync(file).isFile()) return serveFile(req, res, file)
+  }
+  // 部分上游媒体抓取器会先请求 /robots.txt。
   // 若这里走 SPA fallback 返回 index.html（HTML），Vertex 解析失败 → 判定"禁止爬取"
   // → 报 UNREACHABLE_ROBOTS_ERROR / 400 Cannot fetch content。
   // 所以必须显式返回一个"允许全部爬取"的纯文本 robots.txt。
@@ -849,7 +1048,7 @@ function serveStatic(req, res) {
     }
     const ext = path.extname(abs).toLowerCase()
     const ctype = MIME[ext] || 'application/octet-stream'
-    // Range 支持：Vertex AI / 视频客户端抓取大视频时常用分段请求（Range: bytes=...）。
+    // Range 支持：视频客户端抓取大视频时常用分段请求（Range: bytes=...）。
     // 不支持 206 分段可能导致远端抓取失败或超时。这里对所有静态文件通用地实现 Range。
     const range = req.headers['range']
     if (range) {
@@ -878,6 +1077,37 @@ function serveStatic(req, res) {
 async function api(req, res, p) {
   if (req.method === 'OPTIONS') return json(res, 204, {})
 
+  if (p === '/api/auth/session' && req.method === 'GET') {
+    if (!authReady()) return json(res, 503, { authenticated: false, error: '站点鉴权尚未配置' })
+    const user = sessionUser(req)
+    return user ? json(res, 200, { authenticated: true, user }) : json(res, 401, { authenticated: false })
+  }
+  if (p === '/api/auth/login' && req.method === 'POST') {
+    if (!authReady()) return json(res, 503, { error: '站点鉴权尚未配置' })
+    const limit = loginRateLimit(req)
+    if (limit.count >= 8) {
+      const retryAfter = Math.max(1, Math.ceil((limit.resetAt - Date.now()) / 1000))
+      return json(res, 429, { error: '尝试次数过多，请稍后再试' }, { 'Retry-After': String(retryAfter) })
+    }
+    let body = {}
+    try { body = await readBody(req) } catch { return json(res, 400, { error: '无效的登录请求' }) }
+    const config = authConfig()
+    const valid = safeEqual(body?.username || '', config.username) && safeEqual(body?.password || '', config.password)
+    if (!valid) {
+      limit.count += 1
+      return json(res, 401, { error: '账号或密码错误', attemptsRemaining: Math.max(0, 8 - limit.count) })
+    }
+    LOGIN_ATTEMPTS.delete(requestIp(req))
+    const now = Math.floor(Date.now() / 1000)
+    const token = signSession({ username: config.username, iat: now, exp: now + AUTH_TTL_SECONDS, nonce: crypto.randomBytes(12).toString('base64url') })
+    return json(res, 200, { authenticated: true, user: { username: config.username } }, { 'Set-Cookie': sessionCookie(req, token) })
+  }
+  if (p === '/api/auth/logout' && req.method === 'POST') {
+    return json(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(req, '', 0) })
+  }
+  if (!authReady()) return json(res, 503, { error: '站点鉴权尚未配置' })
+  if (!sessionUser(req)) return json(res, 401, { error: '请先登录' })
+
   // —— 视频缓存 + 服务端 ffmpeg 裁剪（照搬 aimixer）：这些需在读 JSON body 前分流
   if (p === '/api/video/upload' && req.method === 'POST') return handleVideoUpload(req, res)
   if (p.startsWith('/api/video/preview/') && req.method === 'GET') return handleVideoPreview(req, res)
@@ -887,9 +1117,23 @@ async function api(req, res, p) {
     if (!file) return json(res, 404, { error: '任务媒体不存在' })
     return serveFile(req, res, file)
   }
+  const subjectMedia = /^\/api\/subject-media\/([A-Za-z0-9_-]{8,80})\/([^/]+)$/.exec(p)
+  if (subjectMedia && req.method === 'GET') {
+    const file = subjectMediaPath(subjectMedia[1], decodeURIComponent(subjectMedia[2]))
+    if (!file) return json(res, 404, { error: '主体图片不存在' })
+    return serveFile(req, res, file)
+  }
+  const subjectUpload = /^\/api\/subjects\/([A-Za-z0-9_-]{8,80})\/image-upload$/.exec(p)
+  if (subjectUpload && req.method === 'POST') return handleSubjectImageUpload(req, res, subjectUpload[1])
   const refUpload = /^\/api\/tasks\/([A-Za-z0-9_-]{8,80})\/reference-upload$/.exec(p)
   if (refUpload && req.method === 'POST') return handleTaskReferenceUpload(req, res, refUpload[1])
   if (p === '/api/tasks' && req.method === 'GET') return json(res, 200, { tasks: listTasks() })
+  if (p === '/api/subjects' && req.method === 'GET') return json(res, 200, { subjects: listSubjects() })
+  const subjectGet = /^\/api\/subjects\/([A-Za-z0-9_-]{8,80})$/.exec(p)
+  if (subjectGet && req.method === 'GET') {
+    const subject = getSubject(subjectGet[1])
+    return subject ? json(res, 200, subject) : json(res, 404, { error: '主体不存在' })
+  }
   const taskGet = /^\/api\/tasks\/([A-Za-z0-9_-]{8,80})$/.exec(p)
   if (taskGet && req.method === 'GET') {
     const task = getTask(taskGet[1])
@@ -902,10 +1146,10 @@ async function api(req, res, p) {
       time: new Date().toISOString(),
       models: MODELS,
       reverseMediaTransport: 'openai-video_url-data-video',
-      muse: {
-        client: process.env.MUSE_CLIENT ? `${process.env.MUSE_CLIENT.slice(0, 4)}***` : '(未配置)',
-        secret: process.env.MUSE_CLIENT_SECRET ? '已配置' : '(未配置)',
-        llmBase: process.env.MUSE_LLM_BASE || 'http://30.48.128.77:8080',
+      ark: {
+        apiKey: process.env.ARK_API_KEY ? '已配置' : '(未配置)',
+        mediaKitApiKey: process.env.MEDIAKIT_API_KEY ? '已配置' : '(未配置)',
+        baseUrl: process.env.ARK_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3',
       },
     })
   }
@@ -915,7 +1159,7 @@ async function api(req, res, p) {
   }
   if (!['POST', 'PATCH', 'DELETE'].includes(req.method || '')) return json(res, 405, { error: 'method not allowed' })
 
-  // —— 上传本地视频，落盘后返回公网 URL（供 gemini 反推直接拉取，绕开 base64 体积限制）
+  // —— 上传本地媒体，落盘后返回可访问 URL
   if (p === '/api/upload') {
     try {
       const buf = await readRawBody(req)
@@ -924,11 +1168,7 @@ async function api(req, res, p) {
       const ext = EXT_BY_MIME[ct] || '.mp4'
       const name = `up_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}${ext}`
       fs.writeFileSync(path.join(UPLOADS, name), buf)
-      // ⚠️ 关键：gemini 后端（Vertex AI）在【公网】拉取视频 URL。
-      // 若用 req.headers.host，用户从内网域名（*.devcloud.woa.com）访问时，
-      // 拼出的就是内网 URL，Google 侧公网拉不到 → 400 "Cannot fetch content from URL"。
-      // 所以优先用显式配置的 PUBLIC_BASE_URL（公网 IP:端口，如 http://21.214.35.208:8080），
-      // 只有它缺失时才回退到请求 Host。
+      // 优先使用显式 PUBLIC_BASE_URL，方便方舟生成服务读取参考素材。
       const base = (process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '')
       let publicUrl
       if (base) {
@@ -952,6 +1192,18 @@ async function api(req, res, p) {
       const task = createTask({ name: body?.name, snapshot: body?.snapshot })
       return json(res, 201, task)
     }
+    if (p === '/api/subjects' && req.method === 'POST') return json(res, 201, createSubject(body))
+    if (p === '/api/subjects/upsert-analysis' && req.method === 'POST') return json(res, 200, upsertAnalyzedSubjects(Array.isArray(body?.subjects) ? body.subjects : []))
+    if (p === '/api/subjects/analyze' && req.method === 'POST') return handleSubjectAnalyze(req, res, body)
+    const subjectMutation = /^\/api\/subjects\/([A-Za-z0-9_-]{8,80})$/.exec(p)
+    if (subjectMutation && req.method === 'PATCH') {
+      const subject = updateSubject(subjectMutation[1], body)
+      return subject ? json(res, 200, subject) : json(res, 404, { error: '主体不存在' })
+    }
+    if (subjectMutation && req.method === 'DELETE') return deleteSubject(subjectMutation[1]) ? json(res, 200, { ok: true }) : json(res, 404, { error: '主体不存在' })
+    const subjectArchive = /^\/api\/subjects\/([A-Za-z0-9_-]{8,80})\/archive$/.exec(p)
+    if (subjectArchive && req.method === 'POST') return handleSubjectArchive(req, res, subjectArchive[1], body)
+    if (p === '/api/export/download') return handleExportDownload(req, res, body)
     const taskMutation = /^\/api\/tasks\/([A-Za-z0-9_-]{8,80})$/.exec(p)
     if (taskMutation && req.method === 'PATCH') {
       const task = updateTask(taskMutation[1], { name: body?.name, snapshot: body?.snapshot })
@@ -973,8 +1225,8 @@ async function api(req, res, p) {
     if (p === '/api/muse/reverse-video') {
       const { trimmed_id, video_url, name, prompt, model } = body
       assertReverseModel(model)
-      // 承载优先级：trimmed_id → 本机 name → 第三方 video_url。视频统一通过 MUSE
-      // OpenAI 兼容 messages[].content[].video_url 承载，模型固定为豆包 2.1 Pro。
+      // 承载优先级：trimmed_id → 本机 name → 第三方 video_url。视频通过方舟
+      // Chat Completions messages[].content[].video_url 承载，模型固定为 Seed 2.1 Pro。
       const inlined = resolveInlineMedia({ trimmed_id, name, video_url })
       const data = await runReverseMedia('reverse-video', {
         video_url: inlined || video_url,
@@ -1034,7 +1286,7 @@ async function api(req, res, p) {
         temperature: 0.4,
         max_tokens: 5200,
         response_format: { type: 'json_object' },
-        // Seed 2.1 Pro 默认 high 深度思考，长策略会触发模型广场 4 分钟传输超时。
+        // 结构化广告拆镜关闭深度思考，控制响应时延。
         // 广告拆镜是结构化、受 schema 约束的生产任务，关闭思考换取确定的响应时延。
         thinking: { type: 'disabled' },
       })
@@ -1050,10 +1302,10 @@ async function api(req, res, p) {
     }
     // 独立 ASR 修复接口：用于旧任务或浏览器缓存中缺失口播的结果，无需重跑整片视觉反推。
     if (p === '/api/asr/transcribe') {
-      const { trimmed_id } = body
-      const localVideoPath = trimmed_id ? resolveVideoPath(trimmed_id) : null
+      const { trimmed_id, video_url } = body
+      const localVideoPath = (trimmed_id ? resolveVideoPath(trimmed_id) : null) || localMediaPath(video_url)
       if (!localVideoPath) return json(res, 404, { error: '找不到原视频，请重新上传后识别' })
-      const mediaUrl = resolveInlineMedia({ trimmed_id })
+      const mediaUrl = resolveInlineMedia({ trimmed_id, video_url })
       const rawSegments = await transcribeVideoWithWhisper(localVideoPath)
       const segments = await correctAsrWithVisual(mediaUrl, rawSegments).catch(err => {
         console.warn(`[asr] repair visual correction failed, keep audio transcript: ${err?.message || err}`)
@@ -1121,8 +1373,7 @@ async function api(req, res, p) {
     if (p === '/api/muse/video/submit') {
       const { prompt, model, duration, aspect_ratio, resolution, sound, generate_audio, reference_images, image_url } = body
       if (!prompt) return json(res, 400, { error: 'prompt required' })
-      // Seedance 2.0 按模型广场字段透传 generate_audio/reference_images；旧 image_url 调用
-      // 归一化成 reference_images，避免前端历史代码失效。
+      // 旧 image_url 调用归一化成方舟 reference_images，避免前端历史代码失效。
       const refs = Array.isArray(reference_images) ? reference_images.filter(Boolean) : image_url ? [image_url] : []
       const inlinedRefs = refs.map(inlineTaskReferenceImage)
       const request = {
@@ -1154,7 +1405,8 @@ async function api(req, res, p) {
     if (p === '/api/muse/subtitle-erase/submit') {
       const { video_url } = body
       if (!video_url) return json(res, 400, { error: 'video_url required' })
-      return json(res, 200, await submitSubtitleErase({ video_url }))
+      const mediaKitVideoUrl = await resolveMediaKitVideoUrl(video_url)
+      return json(res, 200, await submitSubtitleErase({ video_url: mediaKitVideoUrl }))
     }
     if (p === '/api/muse/subtitle-erase/result') {
       const { task_id } = body
@@ -1180,6 +1432,7 @@ async function api(req, res, p) {
 export const handler = (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`)
   if (url.pathname.startsWith('/api/')) return api(req, res, url.pathname).catch(err => { console.error(err); json(res, 500, { error: err.message }) })
+  if (url.pathname.startsWith('/uploads/') && !sessionUser(req)) return json(res, 401, { error: '请先登录' })
   serveStatic(req, res)
 }
 

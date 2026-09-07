@@ -1,4 +1,4 @@
-// 前端 SDK：统一走同源 /api/muse/*，后端替我们签 X-MUSE-TOKEN
+// 前端 SDK：统一走同源 /api/muse/*，后端负责连接火山方舟与 AI MediaKit。
 // 部署时可通过 window.__MUSE_API_BASE__ 覆盖为 http://<cvm>:4322
 
 const BASE: string =
@@ -27,7 +27,14 @@ async function get<T = any>(path: string): Promise<T> {
 }
 
 // —— 健康检查
-export function health() { return get('/api/health') }
+interface ProviderHealth {
+  ok?: boolean
+  ark?: { apiKey?: string; mediaKitApiKey?: string }
+  // 兼容迁移前仍返回 MUSE 字段的旧服务实例。
+  muse?: { client?: string; secret?: string }
+}
+
+export function health() { return get<ProviderHealth>('/api/health') }
 export function ping() { return get('/api/muse/ping') }
 
 // 带重试的 muse 就绪探测：单次探测撞上网络抖动/隧道瞬断会把整个会话永久锁在 mock，
@@ -35,8 +42,10 @@ export function ping() { return get('/api/muse/ping') }
 export async function probeMuseReady(retries = 3, intervalMs = 1200): Promise<boolean> {
   for (let i = 0; i < retries; i++) {
     try {
-      const h: any = await health()
-      const ok = !!(h?.muse && h.muse.client && h.muse.client !== '(未配置)' && h.muse.secret === '已配置')
+      const h = await health()
+      const arkReady = h?.ark?.apiKey === '已配置'
+      const legacyMuseReady = !!(h?.muse?.client && h.muse.client !== '(未配置)' && h.muse.secret === '已配置')
+      const ok = h?.ok === true && (arkReady || legacyMuseReady)
       if (ok) return true
     } catch { /* 继续重试 */ }
     if (i < retries - 1) await new Promise(r => setTimeout(r, intervalMs))
@@ -44,7 +53,7 @@ export async function probeMuseReady(retries = 3, intervalMs = 1200): Promise<bo
   return false
 }
 
-// —— 1) 视频反推（固定 doubao-seed-2-1-pro-260628，经 MUSE OpenAI-compatible chat）
+// —— 1) 视频反推（固定 Doubao Seed 2.1 Pro，经火山方舟 Chat Completions）
 // name 支持：老 uploads 文件名，或视频缓存 id（raw_id / trimmed_id）——后端统一读盘转 base64 内联
 export interface ReverseVideoIn { trimmed_id?: string; video_url?: string; name?: string; prompt?: string; model?: string }
 export function reverseVideo(input: ReverseVideoIn) {
@@ -58,7 +67,7 @@ export function breakdownStrategy(input: BreakdownStrategyIn) {
 }
 
 export interface AsrSegment { start: number; end: number; text: string }
-export async function transcribeVideo(input: { trimmed_id: string }) {
+export async function transcribeVideo(input: { trimmed_id?: string; video_url?: string }) {
   try {
     return await post<{ ok: boolean; segments: AsrSegment[] }>('/api/asr/transcribe', input)
   } catch (err: any) {
@@ -93,7 +102,7 @@ export function analyzeShot(input: AnalyzeShotIn) {
 
 // —— 分镜拆分：按策略skill的 segments[{start,end}]（相对 source_id 这条视频自己的秒数）
 //    批量 ffmpeg 裁出每段独立小视频，返回每段的 shot_trimmed_id
-export interface SplitSegmentsIn { source_id: string; segments: { start: number; end: number }[] }
+export interface SplitSegmentsIn { source_id?: string; source_url?: string; segments: { start: number; end: number }[] }
 export interface SplitSegmentsResult { index: number; ok: boolean; shot_trimmed_id?: string; size?: number; duration?: number; error?: string }
 export function splitVideoSegments(input: SplitSegmentsIn) {
   return post<{ ok: boolean; results: SplitSegmentsResult[] }>('/api/video/split-segments', input)
@@ -147,8 +156,8 @@ export function importVideoUrl(url: string) {
 }
 
 // 服务端 ffmpeg 裁剪：raw_id + [start,end] → trimmed_id（3~120s）
-export function trimVideoOnServer(raw_id: string, start: number, end: number) {
-  return post<{ ok: boolean; trimmed_id: string; size: number; duration: number }>('/api/video/trim', { raw_id, start, end })
+export function trimVideoOnServer(raw_id: string, start: number, end: number, source_url?: string) {
+  return post<{ ok: boolean; trimmed_id: string; size: number; duration: number }>('/api/video/trim', { raw_id, source_url, start, end })
 }
 
 // 预览播放地址（支持 Range，可直接喂 <video src>）
@@ -156,7 +165,7 @@ export function videoPreviewUrl(id: string) {
   return `${BASE}/api/video/preview/${id}`
 }
 
-// 把本地 blob:URL 的视频上传到后端，落盘后拿到公网可访问 URL（供 gemini 网关直接拉取）
+// 把本地 blob:URL 的视频上传到后端，落盘后拿到可访问 URL。
 // 相比 base64 内联：不撑爆请求体、无 20MB 限制、网关直接按视频 URL 处理
 export async function uploadVideo(
   blobUrl: string,
@@ -182,7 +191,7 @@ export async function uploadVideo(
   })
 }
 
-// 把本地 blob:URL / File 读成 base64 data URL，供多模态模型直接消费（gemini 兼容 data: 前缀）
+// 把本地 blob:URL / File 读成 base64 data URL，供方舟多模态模型直接消费。
 // 返回 { dataUrl, bytes }。超过 sizeLimitMB 抛错，避免请求体过大。
 export async function blobUrlToDataUrl(blobUrl: string, sizeLimitMB = 20): Promise<{ dataUrl: string; bytes: number }> {
   const resp = await fetch(blobUrl)
@@ -200,7 +209,7 @@ export async function blobUrlToDataUrl(blobUrl: string, sizeLimitMB = 20): Promi
   return { dataUrl, bytes }
 }
 
-// —— 2) 文本任务（openai chat 兼容；gpt-5.5 默认）
+// —— 2) 文本任务（火山方舟 Chat Completions；Seed 2.1 Pro）
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: any }
 export interface ChatIn {
   messages: ChatMessage[]
@@ -240,7 +249,7 @@ export function generateImage(input: ImageIn) {
   return post<any>('/api/muse/image', input)
 }
 
-// —— 5.0 标题生成：服务端固定使用 doubao-seed-2-1-pro-260628
+// —— 5.0 标题生成：服务端固定使用 Doubao Seed 2.1 Pro
 export function generateTitles(context: string) {
   return post<any>('/api/muse/title', { context })
 }
@@ -260,14 +269,36 @@ export function exportDeliveryPackage(input: { video_url: string; cover_url: str
   return post<{ ok: boolean; package_url: string }>('/api/export/package', input)
 }
 
-// —— 4) 文生/图生视频（seedance 2.0，模型广场统一入口 text2video/submit）
+export async function downloadMediaFile(url: string, filename: string) {
+  const res = await fetch(BASE + '/api/export/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, filename }),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let message = text
+    try { message = JSON.parse(text)?.error || text } catch {}
+    throw new Error(message || `下载失败：HTTP ${res.status}`)
+  }
+  const blobUrl = URL.createObjectURL(await res.blob())
+  const anchor = document.createElement('a')
+  anchor.href = blobUrl
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000)
+}
+
+// —— 4) 文生/图生视频（Seedance 2.0 Mini，火山方舟异步视频任务）
 // 带 image_url（内容参考图公网 URL）即图生视频；不带即纯文生视频。
 // ⚠️ 语义：这里的参考图是「内容/风格参考」，不是「锁定首帧」。seedance 的 submit
 //    只暴露 image_url 一个字段，首帧 vs 内容参考的区别由 prompt 措辞承载——
 //    我们在 prompt 里显式声明「以参考图为画面内容/风格基调，生成全新运镜」，
 //    而非「以此图为固定开场帧」。见 refPromptForI2V()。
-// 统一固定模型：seedance 2.0（模型广场模型名）。前端提交显式带上，链路可追溯。
-export const SEEDANCE_2_0 = 'doubao-seedance-2-0-260128'
+// 统一固定模型：Seedance 2.0 Mini。前端提交显式带上，链路可追溯。
+export const SEEDANCE_2_0 = 'doubao-seedance-2-0-mini-260615'
 // seedance 2.0 提交约束（探测确认）：duration 允许范围 4~15 秒，超出会被网关直接拒绝
 // （错误示例："invalid duration: 3, allowed range for Seedance 2.0: 4-15 seconds"）。
 // 分镜时长本身仍按原视频时间轴自然分段（不因模型限制而改变分段逻辑），
@@ -282,10 +313,10 @@ export interface VideoSubmitIn {
   model?: string
   duration?: number
   aspect_ratio?: string
-  // Seedance 2.0 实测只接受 720p / 1080p / 2k；480p 会被模型广场拒绝。
-  resolution?: '720p' | '1080p' | '2k'
+  // Seedance 2.0 Mini 只接受 480p / 720p。
+  resolution?: '480p' | '720p'
   sound?: 'on' | 'off'               // 兼容旧模型字段
-  generate_audio?: boolean            // Seedance 2.0 官方字段
+  generate_audio?: boolean            // 是否生成同步音轨
   reference_images?: string[]         // Seedance 2.0 内容参考图列表
   image_url?: string                  // 兼容旧调用，服务端会归一化为 reference_images
 }

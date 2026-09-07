@@ -7,7 +7,10 @@ dist/
 .env
 .env.*
 !.env.example
+!server/.env.example
 server/.env
+DEPLOY-README.md
+deploy.sh
 npm-debug.log*
 *.log
 .vercel

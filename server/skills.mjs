@@ -2,7 +2,7 @@
 //   /Users/miyawang/Desktop/715-成片skill平台/拆镜拉片专家/SKILL.md（+ references/strategy-skill-template.md）
 //   /Users/miyawang/Desktop/715-成片skill平台/视频技能创作专家.md
 // 与原 skill 文档的差异：原文档面向"本地文件 + ffmpeg/ASR 预处理 + Write 工具落盘"的 Agent 工作流；
-// 这里视频已经由后端内联成 data:base64，通过 MUSE OpenAI-compatible chat 直接喂给固定的
+// 这里视频已经由后端内联成 data:base64，通过火山方舟 Chat Completions 直接喂给固定的
 // doubao-seed-2-1-pro-260628 多模态输入，所以去掉文件读取/opencv 抽帧/whisper ASR 那部分
 // Agent 操作指令，只保留"怎么看、怎么拆、怎么归纳、输出什么 JSON 结构"的规则本体。
 
@@ -93,8 +93,9 @@ export const BREAKDOWN_STRATEGY_SYSTEM_PROMPT_COMPACT = `你是广告拆镜拉�
 目标：以尽可能少、适当更长的任务段复刻参考片，并输出整片策略。单个任务允许包含多个连续切镜，不要把每个剪辑点都拆成任务。
 拆镜规则：segments 首尾衔接、覆盖全片、不重叠。先找画面突变（场景/主体/动作/机位/运镜/转场/屏幕文案）与 ASR 突变（说话人、句意、情绪、卖点或叙事目标的明显变化）；仅当两者至少有一个形成明确的叙事/生产边界，或下一段不能在同一生成任务中自然表达时，才切新段。画面有轻微切镜但 ASR 语义、主体目标和风格连续时必须合并在同一个任务中；ASR 有短暂停顿但画面与信息连续时也必须合并。默认优先少分段、较长段，目标段长约 10–15 秒；超过 15 秒时只在最自然的画面或 ASR 语义转折点拆开。duration 填实际自然时长（可为任意合理秒数）；5/10/15 秒仅写入 remake.production_tips 作为后续生成建议。start/end 为 mm:ss；品牌和真人信息泛化。
 ASR 与口播规则：逐段先做 ASR，asr_text 必须尽可能完整、逐字保留该段可识别的原片口播/对白，只做字幕校对，不得提炼、润色、改写或补写。只要 asr_text 非空，voiceover_script 必须与 asr_text 完全一致（逐字复制）；无可识别口播时，asr_text 和 voiceover_script 都填空字符串，不得主动创作口播。source_audio 仅客观描述 BGM、环境音、音效和口播存在情况。
+主体识别规则：识别视频里反复出现或对叙事有关键作用的人物、卡通形象、动物、商品或关键实物。不要把纯场景、背景、光线、运镜或抽象概念列为主体。同一主体跨镜头合并，不得因景别变化重复创建。subjects 中写清可供文生图保持一致性的外观特征；人物/卡通角色填写 voice_hint（年龄感、音色、语速、情绪、口音），商品留空。segment_indices 与各段 subject_names 必须互相对应。
 输出结构：
-{"meta":{"title":"","total_duration_s":0,"aspect":"9:16","routine":"","segment_count":0,"disclaimer":""},"strategy":{"core_selling_point":"","expression_style":"","shot_logic":"","narrative_structure":"","attention_hooks":{"pre_roll":"","mid_roll":"","end_roll":""}},"segments":[{"index":1,"start":"00:00","end":"00:10","duration":10,"role":"hook","visual":"","action":"","camera":"","on_screen_text":[],"source_audio":"","asr_text":"","voiceover_script":"","role_note":"","merge_reason":""}],"remake":{"anchors":[],"variables":[],"production_tips":["S1 实际10秒，建议生成10秒；允许包含多个连续切镜"],"cautions":[]}}
+{"meta":{"title":"","total_duration_s":0,"aspect":"9:16","routine":"","segment_count":0,"disclaimer":""},"strategy":{"core_selling_point":"","expression_style":"","shot_logic":"","narrative_structure":"","attention_hooks":{"pre_roll":"","mid_roll":"","end_roll":""}},"subjects":[{"name":"主体名","type":"person|product|scene|other","description":"稳定的外观与识别特征","voice_hint":"音色设定","image_prompt":"用于生成主体定妆图的提示词","segment_indices":[1]}],"segments":[{"index":1,"start":"00:00","end":"00:10","duration":10,"role":"hook","visual":"","action":"","camera":"","on_screen_text":[],"source_audio":"","asr_text":"","voiceover_script":"","role_note":"","merge_reason":"","subject_names":["主体名"]}],"remake":{"anchors":[],"variables":[],"production_tips":["S1 实际10秒，建议生成10秒；允许包含多个连续切镜"],"cautions":[]}}
 每个字段简洁准确：visual/action/camera/source_audio/asr_text/voiceover_script/role_note/merge_reason 各不超过 80 个中文字符；on_screen_text 每项不超过 30 个字；remake 每个数组最多 4 项。只输出 JSON。`
 
 // 独立音轨转写：不依赖画面字幕，专门覆盖“有声音但没有字幕”的口播场景。

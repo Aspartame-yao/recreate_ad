@@ -1,5 +1,5 @@
 import { createContext, useContext, useReducer, type ReactNode, type Dispatch } from 'react'
-import type { AppState, Shot, ShotDuration, ShotAspect, AudioClip, CoverOpt, TitleOpt, StrategySkillJson } from './types'
+import type { AppState, Shot, ShotDuration, ShotAspect, AudioClip, CoverOpt, TitleOpt, StrategySkillJson, Subject, RefImage } from './types'
 import { buildStrategySkillMd, mmssToSec } from './lib/strategySkill'
 
 const uid = () => Math.random().toString(36).slice(2, 9)
@@ -30,6 +30,7 @@ export function snapToShotDuration(sec: number): ShotDuration {
 export const initialState: AppState = {
   taskName: '未命名任务',
   productRefs: [],
+  subjects: [],
   batch: { mode: 'idle', queueIds: [] },
   step: 0,
   source: { name: '', sizeMB: 0, durationS: 0, resolution: '', objectUrl: null as string | null, rawId: '', trimmedId: '' },
@@ -51,6 +52,13 @@ export type Action =
   | { type: 'setProductRefs'; refs: AppState['productRefs'] }
   | { type: 'addProductRefs'; refs: AppState['productRefs'] }
   | { type: 'delProductRef'; refId: string }
+  | { type: 'setSubjects'; subjects: Subject[] }
+  | { type: 'addSubject'; subject: Subject }
+  | { type: 'editSubject'; id: string; patch: Partial<Subject> }
+  | { type: 'deleteSubject'; id: string }
+  | { type: 'addSubjectImage'; id: string; image: RefImage }
+  | { type: 'delSubjectImage'; id: string; imageId: string }
+  | { type: 'toggleShotSubject'; shotId: string; subjectId: string }
   | { type: 'startBatch'; mode: 'analyze' | 'generate'; queueIds: string[] }
   | { type: 'setBatchCurrent'; id?: string }
   | { type: 'stopBatch' }
@@ -68,7 +76,7 @@ export type Action =
   | { type: 'applyAsrTranscript'; segments: { start: number; end: number; text: string }[] }
   // 1.0 末尾 / 2.0 开头 · 共用分镜拆分
   | { type: 'startSplit' }
-  | { type: 'completeSplit'; results: { id: string; ok: boolean; shotTrimmedId?: string; error?: string }[] }
+  | { type: 'completeSplit'; results: { id: string; ok: boolean; shotTrimmedId?: string; originalClipUrl?: string; error?: string }[] }
   | { type: 'failSplit'; err: string }
   | { type: 'setShots'; shots: Shot[] }
   // 2.0 · 每段分析（视频技能创作专家）
@@ -111,8 +119,10 @@ function reducer(s: AppState, a: Action): AppState {
       // 浏览器刷新或服务重启后，旧的 running/queued 没有可恢复的前端轮询句柄；
       // 解除假运行状态，让用户可以重新提交，而不是永久卡在 2%。
       const hydrated = { ...initialState, ...a.state, taskId: a.taskId, taskName: a.taskName, toast: null, batch: { mode: 'idle', queueIds: [] } } as AppState
+      hydrated.subjects = (hydrated.subjects || []).map(subject => ({ ...subject, type: (subject.type as string) === 'character' ? 'other' : subject.type, images: (subject.images || []).slice(0, 3), voice: subject.voice || '', imagePrompt: subject.imagePrompt || subject.description || '', recommended: subject.recommended !== false }))
       hydrated.shots = (hydrated.shots || []).map(sh => ({
         ...sh,
+        subjectIds: sh.subjectIds || [],
         generatedDuration: sh.generatedDuration || (sh.videoUrl ? sh.genDuration : undefined),
         trimStart: sh.videoUrl && !sh.generatedDuration ? 0 : sh.trimStart,
         trimEnd: sh.videoUrl && !sh.generatedDuration ? sh.genDuration : sh.trimEnd,
@@ -128,6 +138,13 @@ function reducer(s: AppState, a: Action): AppState {
     case 'setProductRefs': return { ...s, productRefs: a.refs.slice(0, 9) }
     case 'addProductRefs': return { ...s, productRefs: [...s.productRefs, ...a.refs].slice(0, 9) }
     case 'delProductRef': return { ...s, productRefs: s.productRefs.filter(ref => ref.id !== a.refId) }
+    case 'setSubjects': return { ...s, subjects: a.subjects.map(subject => ({ ...subject, images: (subject.images || []).slice(0, 3) })) }
+    case 'addSubject': return { ...s, subjects: [...s.subjects, { ...a.subject, images: a.subject.images.slice(0, 3) }] }
+    case 'editSubject': return { ...s, subjects: s.subjects.map(subject => subject.id === a.id ? { ...subject, ...a.patch, images: (a.patch.images || subject.images).slice(0, 3) } : subject) }
+    case 'deleteSubject': return { ...s, subjects: s.subjects.filter(subject => subject.id !== a.id), shots: s.shots.map(shot => ({ ...shot, subjectIds: shot.subjectIds.filter(id => id !== a.id) })) }
+    case 'addSubjectImage': return { ...s, subjects: s.subjects.map(subject => subject.id === a.id && subject.images.length < 3 ? { ...subject, images: [...subject.images, a.image] } : subject) }
+    case 'delSubjectImage': return { ...s, subjects: s.subjects.map(subject => subject.id === a.id ? { ...subject, images: subject.images.filter(image => image.id !== a.imageId) } : subject) }
+    case 'toggleShotSubject': return { ...s, shots: s.shots.map(shot => shot.id === a.shotId ? { ...shot, subjectIds: shot.subjectIds.includes(a.subjectId) ? shot.subjectIds.filter(id => id !== a.subjectId) : [...shot.subjectIds, a.subjectId] } : shot) }
     case 'startBatch': return { ...s, batch: { mode: a.mode, queueIds: a.queueIds, currentId: undefined } }
     case 'setBatchCurrent': return { ...s, batch: { ...s.batch, currentId: a.id } }
     case 'stopBatch': return { ...s, batch: { ...s.batch, stopped: true } }
@@ -141,13 +158,13 @@ function reducer(s: AppState, a: Action): AppState {
       }
       const source = { ...initialState.source, ...a.source }
       const end = Math.min(source.durationS || 45, 180)
-      return { ...initialState, taskId: s.taskId, taskName: s.taskName, productRefs: s.productRefs, source, crop: { enabled: true, start: 0, end } }
+      return { ...initialState, taskId: s.taskId, taskName: s.taskName, productRefs: s.productRefs, subjects: s.subjects, source, crop: { enabled: true, start: 0, end } }
     }
     case 'patchSource': return { ...s, source: { ...s.source, ...a.source } }
     case 'resetSource': {
       // 清空/重新上传：回到无视频态，重置整条链路（分析/分镜/生成全部作废，避免残留旧结果）
       if (s.source.objectUrl && s.source.objectUrl.startsWith('blob:')) { try { URL.revokeObjectURL(s.source.objectUrl) } catch {} }
-      return { ...initialState, taskId: s.taskId, taskName: s.taskName, productRefs: s.productRefs }
+      return { ...initialState, taskId: s.taskId, taskName: s.taskName, productRefs: s.productRefs, subjects: s.subjects }
     }
     case 'setCrop': return { ...s, crop: { ...s.crop, ...a.crop } }
 
@@ -156,6 +173,18 @@ function reducer(s: AppState, a: Action): AppState {
     case 'analyzeFailed': return { ...s, analyzing: false, analyzed: false, analyzeProgress: 0, analyzeErr: a.err }
     case 'setStrategySkill': {
       const md = buildStrategySkillMd(a.json)
+      const existingByName = new Map(s.subjects.map(subject => [subject.name.trim().toLowerCase(), subject]))
+      const analyzedSubjects: Subject[] = (a.json.subjects || []).map((subject, i) => {
+        const existing = existingByName.get(subject.name.trim().toLowerCase())
+        return existing || {
+          id: uid(), name: subject.name || `主体${i + 1}`, type: subject.type || 'other',
+          description: subject.description || '', voice: subject.voice_hint || '',
+          imagePrompt: subject.image_prompt || subject.description || '', images: [], recommended: true, source: 'analysis',
+        }
+      })
+      const analyzedNames = new Set(analyzedSubjects.map(subject => subject.name.trim().toLowerCase()))
+      const subjects = [...analyzedSubjects, ...s.subjects.filter(subject => !analyzedNames.has(subject.name.trim().toLowerCase()))]
+      const idByName = new Map(subjects.map(subject => [subject.name.trim().toLowerCase(), subject.id]))
       // 用策略skill 的 segments 直接铺出分镜行；这里先让用户看到时间轴，小视频由
       // 1.0 末尾或 2.0 开头共用的 ShotSplitControl 调 ffmpeg 拆分。
       const shots: Shot[] = a.json.segments.map((seg, i) => ({
@@ -170,13 +199,14 @@ function reducer(s: AppState, a: Action): AppState {
         duration: seg.duration,
         splitStatus: 'idle',
         analyzeStatus: 'idle',
-        prompt: seg.visual,
+        prompt: `${(seg.subject_names || []).map(name => `@${name}`).join(' ')}${(seg.subject_names || []).length ? '\n' : ''}${seg.visual}`,
         // ASR 原文优先且直接进入逐镜生成；voiceover_script 仅兼容旧任务数据。
         voiceover: String(seg.asr_text || seg.voiceover_script || ''),
         genDuration: snapToShotDuration(seg.duration),
         aspectRatio: (a.json.meta?.aspect === '16:9' ? '16:9' : '9:16') as ShotAspect,
         requiresImage: false,
         refs: [],
+        subjectIds: (seg.subject_names || []).map(name => idByName.get(name.trim().toLowerCase())).filter((id): id is string => !!id),
         status: 'idle', progress: 0,
         eraseOn: true, erased: false,
         trimStart: 0, trimEnd: seg.duration, speed: 1,
@@ -184,7 +214,7 @@ function reducer(s: AppState, a: Action): AppState {
       return {
         ...s,
         analyzing: false, analyzed: true, analyzeProgress: 100, analyzeErr: '',
-        strategySkill: a.json, strategyMd: md,
+        strategySkill: a.json, strategyMd: md, subjects,
         shots,
       }
     }
@@ -228,7 +258,7 @@ function reducer(s: AppState, a: Action): AppState {
       splitting: true,
       shots: s.shots.map(sh => ({
         ...sh,
-        splitStatus: 'running', splitError: undefined, shotTrimmedId: undefined,
+        splitStatus: 'running', splitError: undefined, shotTrimmedId: undefined, originalClipUrl: undefined,
         analyzeStatus: 'idle', analyzeError: undefined, analyzeMd: undefined,
         status: 'idle', progress: 0, videoUrl: undefined, isMock: undefined,
       })),
@@ -242,7 +272,7 @@ function reducer(s: AppState, a: Action): AppState {
           const r = byId.get(sh.id)
           if (!r) return { ...sh, splitStatus: 'failed', splitError: '拆分结果缺失', shotTrimmedId: undefined }
           return r.ok
-            ? { ...sh, splitStatus: 'done', splitError: undefined, shotTrimmedId: r.shotTrimmedId }
+            ? { ...sh, splitStatus: 'done', splitError: undefined, shotTrimmedId: r.shotTrimmedId, originalClipUrl: r.originalClipUrl }
             : { ...sh, splitStatus: 'failed', splitError: r.error || '分镜拆分失败', shotTrimmedId: undefined }
         }),
       }
@@ -268,7 +298,7 @@ function reducer(s: AppState, a: Action): AppState {
     }
     case 'setShotAnalyzeMd': return {
       ...s, shots: s.shots.map(sh => sh.id === a.id
-        ? { ...sh, analyzeMd: a.md, analyzeStatus: 'done', analyzeError: undefined, prompt: a.prompt, requiresImage: a.requiresImage ?? sh.requiresImage }
+        ? { ...sh, analyzeMd: a.md, analyzeStatus: 'done', analyzeError: undefined, prompt: `${(sh.prompt.match(/@[^\s，,。:：]+/g) || []).join(' ')}${(sh.prompt.match(/@[^\s，,。:：]+/g) || []).length ? '\n' : ''}${a.prompt}`, requiresImage: a.requiresImage ?? sh.requiresImage }
         : sh),
     }
 

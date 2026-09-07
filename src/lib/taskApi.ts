@@ -33,7 +33,7 @@ export async function uploadTaskReference(taskId: string, file: File): Promise<R
   if (!res.ok) throw Object.assign(new Error(body?.error || `HTTP ${res.status}`), { status: res.status, body })
   return { id: body.id, name: body.name, url: body.url, publicUrl: body.public_url }
 }
-export async function archiveTaskMedia(taskId: string, url: string, name: string): Promise<{ url: string; publicUrl: string }> {
-  const body = await request<any>(`/api/tasks/${taskId}/archive`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, name }) })
+export async function archiveTaskMedia(taskId: string, url: string, name: string, sourceTaskId?: string): Promise<{ url: string; publicUrl: string }> {
+  const body = await request<any>(`/api/tasks/${taskId}/archive`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, name, source_task_id: sourceTaskId }) })
   return { url: body.url, publicUrl: body.public_url }
 }

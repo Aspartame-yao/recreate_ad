@@ -1,4 +1,4 @@
-import { useStore, useToast, STEPS } from '../store'
+import { useStore, STEPS } from '../store'
 import { Step1Reverse } from '../steps/Step1Reverse'
 import { Step2Replicate } from '../steps/Step2Replicate'
 import { Step3Process, Step4Compose, Step5Cover } from '../steps/StepsRest'
@@ -22,7 +22,6 @@ const DESCRIPTIONS = [
 
 export function Stage() {
   const { state, dispatch } = useStore()
-  const toast = useToast()
   const i = state.step
   const s = STEPS[i]
   const body = [<Step1Reverse />, <Step2Replicate />, <Step3Process />, <Step4Compose />, <Step5Cover />][i]
@@ -31,7 +30,8 @@ export function Stage() {
 
   const go = (d: number) => {
     const n = i + d
-    if (n < 0 || n > MAX) { toast('流程完成 · 交付包已导出'); return }
+    if (n < 0) return
+    if (n > MAX) { window.dispatchEvent(new Event('toushi:export')); return }
     dispatch({ type: 'goStep', step: n })
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }

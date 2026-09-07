@@ -4,6 +4,7 @@ import type { AppState, RefImage, Shot } from "../types";
 import { ShotSplitControl } from "../components/ShotSplitControl";
 import {
   analyzeShot,
+  downloadMediaFile,
   videoPreviewUrl,
   generateVideoAndWait,
   refPromptForI2V,
@@ -33,7 +34,7 @@ async function runShotAnalysis(
   dispatch({ type: "startShotAnalyze", id: shot.id });
   try {
     const r = await analyzeShot({
-      trimmed_id: shot.shotTrimmedId,
+      ...(shot.originalClipUrl ? { video_url: shot.originalClipUrl } : { trimmed_id: shot.shotTrimmedId }),
       voiceover_hint: shot.voiceover,
     });
     const md = String(
@@ -86,7 +87,8 @@ async function runShotGeneration(
     toast(`${shot.no} 必须先完成片段反推，才能生成`, { tone: "warn" });
     return false;
   }
-  const refs = [...state.productRefs, ...shot.refs];
+  const boundSubjects = state.subjects.filter(subject => shot.subjectIds.includes(subject.id));
+  const refs = [...boundSubjects.flatMap(subject => subject.images), ...state.productRefs, ...shot.refs];
   const urls = [...new Set(refs.map(modelUrl).filter(Boolean))].slice(0, 9);
   if (refs.length && !urls.length) {
     toast("参考图尚未完成上传，请重新上传后再生成", { tone: "warn" });
@@ -99,7 +101,10 @@ async function runShotGeneration(
     const voiceoverBlock = exactVoiceover
       ? `\n\n【锁定口播原文｜禁止改写或省略】\n逐字、完整、按原顺序说出：「${exactVoiceover}」。不得同义改写、增删字句或用旁白替换。生成同步口型、环境音与贴合画面的轻量音效。`
       : "\n\n【声音】本镜头无口播，不要主动添加旁白；仅生成环境音与贴合画面的轻量音效。";
-    const currentPrompt = `${urls.length ? refPromptForI2V(shot.prompt) : shot.prompt}${voiceoverBlock}`;
+    const subjectBlock = boundSubjects.length
+      ? `\n\n【锁定主体一致性】\n${boundSubjects.map(subject => `@${subject.name}（${subject.type}）：${subject.description || '按参考图保持外观一致'}${subject.voice ? `；音色：${subject.voice}` : ''}`).join('\n')}。凡提及 @主体名 都必须严格沿用对应参考图、外观与音色设定。`
+      : '';
+    const currentPrompt = `${urls.length ? refPromptForI2V(shot.prompt) : shot.prompt}${subjectBlock}${voiceoverBlock}`;
     const request = {
       prompt: currentPrompt,
       duration: clampSeedanceDuration(shot.genDuration),
@@ -135,6 +140,7 @@ async function runShotGeneration(
       r?.video_url ||
       r?.data?.content?.video_url ||
       r?.content?.video_url;
+    const sourceVideoTaskId = r?.id || r?.task_id || r?.data?.task_id;
     if (!remoteUrl)
       throw new Error(
         "生成完成但未返回可播放的视频地址：" + JSON.stringify(r).slice(0, 200),
@@ -148,6 +154,7 @@ async function runShotGeneration(
             state.taskId,
             remoteUrl,
             `${shot.no}-generated.mp4`,
+            sourceVideoTaskId,
           )
         ).url;
       } catch (e) {
@@ -161,6 +168,8 @@ async function runShotGeneration(
       status: "done",
       patch: {
         videoUrl: savedUrl,
+        sourceVideoUrl: remoteUrl,
+        sourceVideoTaskId,
         generatedDuration: shot.genDuration,
         trimStart: 0,
         trimEnd: shot.genDuration,
@@ -316,6 +325,10 @@ export function Step2Replicate() {
   return (
     <div>
       <ShotSplitControl variant="workflow" />
+      <section className="subject-strip">
+        <div><div className="product-ref-title">主体库</div><div className="product-ref-note">AI 已从解析结果推荐主体。镜头会自动带入已绑定主体的形象、参考图和音色。</div></div>
+        <div className="subject-strip__items">{state.subjects.slice(0, 6).map(subject => <button className={`subject-strip-tile ${subject.recommended ? 'is-recommended' : ''}`} key={subject.id} onClick={() => window.dispatchEvent(new Event('toushi:subjects'))}><span>{subject.images[0] ? <img src={subject.images[0].url} alt="" /> : subject.name.slice(0, 1)}</span><b>{subject.name || '未命名'}</b></button>)}<button className="subject-strip-add" onClick={() => window.dispatchEvent(new Event('toushi:subjects'))}>+管理主体</button></div>
+      </section>
       <section className="product-ref-panel">
         <div>
           <div className="product-ref-title">统一商品参考图</div>
@@ -459,10 +472,12 @@ function ReplicateShotRow({
   onUpload: (files: FileList | null) => void;
   locked: boolean;
 }) {
-  const { dispatch } = useStore();
+  const { state, dispatch } = useStore();
+  const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
   const [showMd, setShowMd] = useState(false);
-  const src = shot.shotTrimmedId ? videoPreviewUrl(shot.shotTrimmedId) : null;
+  const [showSubjects, setShowSubjects] = useState(false);
+  const src = shot.originalClipUrl || (shot.shotTrimmedId ? videoPreviewUrl(shot.shotTrimmedId) : null);
   const parsed = shot.analyzeMd ? parseShotSkillMd(shot.analyzeMd) : null;
   const canAnalyze =
     !locked && shot.splitStatus === "done" && !!shot.shotTrimmedId;
@@ -544,15 +559,12 @@ function ReplicateShotRow({
                 )}
               </div>
               {shot.videoUrl && (
-                <a
+                <button
                   className="rep-download"
-                  href={shot.videoUrl}
-                  download={`${shot.no}.mp4`}
-                  target="_blank"
-                  rel="noreferrer"
+                  onClick={() => downloadMediaFile(shot.videoUrl!, `${shot.no}.mp4`).catch(e => toast(`下载失败：${String(e?.message || e).slice(0, 120)}`, { tone: 'warn' }))}
                 >
                   ⇩ MP4
-                </a>
+                </button>
               )}
             </div>
           </div>
@@ -592,6 +604,7 @@ function ReplicateShotRow({
           <textarea
             className="edt rep-prompt"
             value={shot.prompt}
+            placeholder="描述画面，需要固定主体时输入 @主体名"
             onChange={(e) =>
               dispatch({
                 type: "editShot",
@@ -601,6 +614,18 @@ function ReplicateShotRow({
             }
             disabled={locked}
           />
+          <div className="shot-subject-row">
+            <span className="prm-lb">镜头主体</span>
+            <div className="shot-subject-chips">{state.subjects.filter(subject => shot.subjectIds.includes(subject.id)).map(subject => <button key={subject.id} className="subject-chip is-bound" title="点击取消绑定" onClick={() => {
+              dispatch({ type: 'toggleShotSubject', shotId: shot.id, subjectId: subject.id })
+              dispatch({ type: 'editShot', id: shot.id, patch: { prompt: shot.prompt.replace(new RegExp(`@${subject.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'g'), '') } })
+            }}>@{subject.name} ×</button>)}<button className="rep-ref-add subject-bind-add" disabled={locked} onClick={() => setShowSubjects(v => !v)}>+</button></div>
+            {showSubjects && <div className="subject-picker">{state.subjects.filter(subject => !shot.subjectIds.includes(subject.id)).map(subject => <button key={subject.id} onClick={() => {
+              dispatch({ type: 'toggleShotSubject', shotId: shot.id, subjectId: subject.id })
+              if (!shot.prompt.includes(`@${subject.name}`)) dispatch({ type: 'editShot', id: shot.id, patch: { prompt: `@${subject.name} ${shot.prompt}` } })
+              setShowSubjects(false)
+            }}><span>{subject.images[0] ? <img src={subject.images[0].url} alt="" /> : subject.name.slice(0, 1)}</span><b>@{subject.name}</b><small>{subject.recommended ? '默认推荐' : subject.description.slice(0, 24)}</small></button>)}{!state.subjects.length && <button onClick={() => window.dispatchEvent(new Event('toushi:subjects'))}>+先去主体库添加主体</button>}</div>}
+          </div>
           <div className="prm-lb rep-field-label rep-voice-label">
             有声口播（可编辑）
           </div>

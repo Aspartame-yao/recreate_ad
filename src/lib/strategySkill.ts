@@ -19,8 +19,9 @@ export function buildStrategySkillMd(j: StrategySkillJson): string {
   const name = `${j.meta?.title || '参考片'}同款分镜策略`
   const desc = `复刻《${j.meta?.title || '参考片'}》：${j.strategy?.core_selling_point || ''}`.slice(0, 160)
   const segLines = (j.segments || []).map(s =>
-    `${s.index}. \`${s.start}–${s.end}\`（${s.duration}s · ${s.role}）${s.role_note || ''}\n   - 画面：${s.visual}\n   - 口播：${s.voiceover_script}`
+    `${s.index}. \`${s.start}–${s.end}\`（${s.duration}s · ${s.role}）${s.role_note || ''}\n   - 主体：${(s.subject_names || []).map(name => `@${name}`).join(' / ') || '无'}\n   - 画面：${s.visual}\n   - 口播：${s.voiceover_script}`
   ).join('\n')
+  const subjectLines = (j.subjects || []).map(subject => `- **@${subject.name}**（${subject.type}）：${subject.description}${subject.voice_hint ? `；音色：${subject.voice_hint}` : ''}`).join('\n') || '- 未识别到稳定主体'
   return `---
 name: ${name}
 description: "由拆镜拉片专家分析参考片生成，含成片策略与拆镜时间轴（每段5/10/15s）+每段默认口播"
@@ -40,6 +41,9 @@ agent_created: true
 
 ## 拆镜时间轴（${(j.segments || []).length} 段）
 ${segLines}
+
+## 主体库
+${subjectLines}
 
 ## 复刻要点
 - 锚点：${(j.remake?.anchors || []).join(' / ')}

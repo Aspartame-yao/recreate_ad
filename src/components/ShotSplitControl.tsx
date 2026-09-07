@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useStore, useToast } from '../store'
-import { splitVideoSegments } from '../lib/museApi'
+import { splitVideoSegments, videoPreviewUrl } from '../lib/museApi'
+import { archiveTaskMedia } from '../lib/taskApi'
 
 export function ShotSplitControl({ variant = 'summary', auto = false, silent = false }: { variant?: 'summary' | 'workflow'; auto?: boolean; silent?: boolean }) {
   const { state, dispatch } = useStore()
@@ -11,21 +12,27 @@ export function ShotSplitControl({ variant = 'summary', auto = false, silent = f
   const allSplit = total > 0 && done === total
 
   async function runSplit() {
-    if (!state.source.trimmedId) { toast('请先在 1.0 完成视频裁剪', { tone: 'warn' }); return }
+    if (!state.source.trimmedId && !state.source.trimmedUrl) { toast('请先在 1.0 完成视频裁剪', { tone: 'warn' }); return }
     if (!total) { toast('请先在 1.0 完成整片反推', { tone: 'warn' }); return }
     const snapshot = state.shots.map(sh => ({ id: sh.id, start: sh.sourceStart, end: sh.sourceEnd }))
     dispatch({ type: 'startSplit' })
     try {
-      const r = await splitVideoSegments({ source_id: state.source.trimmedId, segments: snapshot.map(({ start, end }) => ({ start, end })) })
-      const results = snapshot.map((sh, i) => {
+      const r = await splitVideoSegments({ source_id: state.source.trimmedId, source_url: state.source.trimmedUrl, segments: snapshot.map(({ start, end }) => ({ start, end })) })
+      const results = await Promise.all(snapshot.map(async (sh, i) => {
         const hit = r.results?.[i]
+        let originalClipUrl = ''
+        if (hit?.ok && hit.shot_trimmed_id && state.taskId) {
+          try { originalClipUrl = (await archiveTaskMedia(state.taskId, videoPreviewUrl(hit.shot_trimmed_id), `${sh.id}-original.mp4`)).url }
+          catch (e) { console.warn('[archive original clip]', e) }
+        }
         return {
           id: sh.id,
           ok: !!(hit?.ok && hit.shot_trimmed_id),
           shotTrimmedId: hit?.shot_trimmed_id,
+          originalClipUrl,
           error: hit?.error,
         }
-      })
+      }))
       dispatch({ type: 'completeSplit', results })
       const okCount = results.filter(x => x.ok).length
       toast(`分镜拆分完成 · ${okCount}/${total} 段成功`, okCount < total ? { tone: 'warn' } : undefined)
@@ -38,12 +45,12 @@ export function ShotSplitControl({ variant = 'summary', auto = false, silent = f
 
   const autoStarted = useRef(false)
   useEffect(() => {
-    if (!auto || autoStarted.current || !total || !state.source.trimmedId || state.splitting || allSplit) return
+    if (!auto || autoStarted.current || !total || (!state.source.trimmedId && !state.source.trimmedUrl) || state.splitting || allSplit) return
     autoStarted.current = true
     runSplit()
     // Only once per mounted strategy report. Subsequent status changes are handled by reducer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto, total, state.source.trimmedId, state.splitting, allSplit])
+  }, [auto, total, state.source.trimmedId, state.source.trimmedUrl, state.splitting, allSplit])
 
   const text = state.splitting
     ? '拆分中…'

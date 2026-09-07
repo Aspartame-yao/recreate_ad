@@ -7,6 +7,8 @@ import {
   transcribeVideo,
 } from '../lib/museApi'
 import { extractJson } from '../lib/parseJson'
+import { archiveTaskMedia } from '../lib/taskApi'
+import { upsertAnalyzedSubjects } from '../lib/subjectApi'
 import { ShotSplitControl } from '../components/ShotSplitControl'
 import { ArrowRight, Link2, Play, Plus, RotateCcw, ShieldCheck, Sparkles, Upload as UploadIcon, X } from 'lucide-react'
 
@@ -23,8 +25,8 @@ export function Step1Reverse() {
   const [cropOpen, setCropOpen] = useState(false)
   const [started, setStarted] = useState(false)
 
-  const hasVideo = !!state.source.objectUrl
-  const trimmed = !!state.source.trimmedId
+  const hasVideo = !!(state.source.objectUrl || state.source.rawUrl || state.source.trimmedUrl)
+  const trimmed = !!(state.source.trimmedId || state.source.trimmedUrl)
   const analyzingOrDone = started || state.analyzing || state.analyzed
 
   if (analyzingOrDone) return <Analyze />
@@ -51,7 +53,7 @@ export function Step1Reverse() {
 
 /* ---- 上传框：右上「本地上传」+ 大拖拽区 + 独立网址行 ---- */
 function Upload({ onUploaded }: { onUploaded: () => void }) {
-  const { dispatch } = useStore()
+  const { state, dispatch } = useStore()
   const toast = useToast()
   const fileRef = useRef<HTMLInputElement>(null)
   const [drag, setDrag] = useState(false)
@@ -81,7 +83,12 @@ function Upload({ onUploaded }: { onUploaded: () => void }) {
       setUploading(true); setUpPct(0)
       try {
         const up = await uploadVideoRaw(f, { filename: f.name, onProgress: setUpPct })
-        dispatch({ type: 'patchSource', source: { rawId: up.raw_id } })
+        let rawUrl = ''
+        if (state.taskId) {
+          try { rawUrl = (await archiveTaskMedia(state.taskId, videoPreviewUrl(up.raw_id), `source-original${up.ext || '.mp4'}`)).url }
+          catch (e) { console.warn('[archive source video]', e) }
+        }
+        dispatch({ type: 'patchSource', source: { rawId: up.raw_id, rawUrl } })
         toast(`${f.name} · ${(f.size / 1024 / 1024).toFixed(1)} MB · 已上传`)
       } catch (e: any) {
         toast('上传失败：' + String(e?.message || e).slice(0, 80), { tone: 'warn' })
@@ -103,6 +110,11 @@ function Upload({ onUploaded }: { onUploaded: () => void }) {
     try {
       const im = await importVideoUrl(u)
       const previewUrl = videoPreviewUrl(im.raw_id)
+      let rawUrl = ''
+      if (state.taskId) {
+        try { rawUrl = (await archiveTaskMedia(state.taskId, previewUrl, `source-original${im.ext || '.mp4'}`)).url }
+        catch (e) { console.warn('[archive source video]', e) }
+      }
       const meta = await new Promise<{ d: number; r: string }>(resolve => {
         const v = document.createElement('video')
         v.preload = 'metadata'
@@ -115,7 +127,7 @@ function Upload({ onUploaded }: { onUploaded: () => void }) {
       })
       dispatch({
         type: 'setNewSource',
-        source: { name, sizeMB: +(im.size / 1024 / 1024).toFixed(1), durationS: meta.d, resolution: meta.r, objectUrl: previewUrl, rawId: im.raw_id, trimmedId: '' },
+        source: { name, sizeMB: +(im.size / 1024 / 1024).toFixed(1), durationS: meta.d, resolution: meta.r, objectUrl: previewUrl, rawId: im.raw_id, rawUrl, trimmedId: '' },
       })
       toast(`已载入 URL · ${name} · ${(im.size / 1024 / 1024).toFixed(1)} MB`)
       onUploaded()
@@ -181,8 +193,8 @@ function Preview({ onRecrop, onReupload, onClear, onRun, trimmed }: {
 }) {
   const { state } = useStore()
   const { start, end, enabled } = state.crop
-  const trimmedSrc = trimmed && state.source.trimmedId ? videoPreviewUrl(state.source.trimmedId) : null
-  const src = trimmedSrc || state.source.objectUrl || undefined
+  const trimmedSrc = trimmed ? (state.source.trimmedUrl || (state.source.trimmedId ? videoPreviewUrl(state.source.trimmedId) : null)) : null
+  const src = trimmedSrc || state.source.objectUrl || state.source.rawUrl || undefined
   const showTrimmed = !!trimmedSrc
 
   return (
@@ -307,8 +319,13 @@ function CropModal({ onClose, onConfirm }: { onClose: () => void; onConfirm: () 
           return
         }
       }
-      const r = await trimVideoOnServer(rawId, start, end)
-      dispatch({ type: 'patchSource', source: { trimmedId: r.trimmed_id } })
+      const r = await trimVideoOnServer(rawId, start, end, state.source.rawUrl)
+      let trimmedUrl = ''
+      if (state.taskId) {
+        try { trimmedUrl = (await archiveTaskMedia(state.taskId, videoPreviewUrl(r.trimmed_id), 'source-trimmed.mp4')).url }
+        catch (e) { console.warn('[archive trimmed video]', e) }
+      }
+      dispatch({ type: 'patchSource', source: { trimmedId: r.trimmed_id, trimmedUrl } })
       toast(`已裁剪 ${span}s 片段 · ${(r.size / 1024 / 1024).toFixed(1)} MB`)
       onConfirm()
     } catch (e: any) {
@@ -331,8 +348,8 @@ function CropModal({ onClose, onConfirm }: { onClose: () => void; onConfirm: () 
         </div>
 
         <div className="crop-stage">
-          {state.source.objectUrl
-            ? <video ref={videoRef} src={state.source.objectUrl} muted loop playsInline className="crop-stage-video" />
+          {state.source.objectUrl || state.source.rawUrl
+            ? <video ref={videoRef} src={state.source.objectUrl || state.source.rawUrl} muted loop playsInline className="crop-stage-video" />
             : <div className="crop-stage-ph"><Play size={17} /> {state.source.name}</div>}
           <div className="crop-stage-ctrl">
             <button className="crop-play" onClick={togglePlay} aria-label={playing ? '暂停' : '播放'}>{playing ? '❚❚' : '▶'}</button>
@@ -379,7 +396,7 @@ function Analyze() {
   useEffect(() => { probeMuseReady().then(setMuseReady) }, [])
 
   async function runBreakdown() {
-    if (!state.source.trimmedId) {
+    if (!state.source.trimmedId && !state.source.trimmedUrl) {
       toast('没有可分析的视频，请先上传并裁剪', { tone: 'warn' })
       dispatch({ type: 'analyzeFailed', err: '没有裁剪片段' })
       return
@@ -387,12 +404,20 @@ function Analyze() {
     dispatch({ type: 'startAnalyze' })
     dispatch({ type: 'analyzeProgress', p: 8 })
     try {
-      const r = await breakdownStrategy({ trimmed_id: state.source.trimmedId })
+      const r = await breakdownStrategy(state.source.trimmedUrl
+        ? { video_url: state.source.trimmedUrl }
+        : { trimmed_id: state.source.trimmedId })
       dispatch({ type: 'analyzeProgress', p: 70 })
       const txt = r?.choices?.[0]?.message?.content ?? r?.data?.choices?.[0]?.message?.content ?? ''
       setRawText(String(txt).slice(0, 6000))
       const parsed = extractJson(String(txt))
       if (parsed && Array.isArray((parsed as any).segments) && (parsed as any).segments.length) {
+        if (Array.isArray((parsed as any).subjects) && (parsed as any).subjects.length) {
+          try {
+            const global = await upsertAnalyzedSubjects((parsed as any).subjects)
+            dispatch({ type: 'setSubjects', subjects: global.subjects })
+          } catch (e) { console.warn('[global subjects upsert]', e) }
+        }
         dispatch({ type: 'analyzeProgress', p: 100 })
         dispatch({ type: 'setStrategySkill', json: parsed as any })
       } else {
@@ -483,10 +508,10 @@ function StrategyReport() {
   const [asrRepairing, setAsrRepairing] = useState(false)
 
   async function repairAsr() {
-    if (!state.source.trimmedId || asrRepairing) return
+    if ((!state.source.trimmedId && !state.source.trimmedUrl) || asrRepairing) return
     setAsrRepairing(true)
     try {
-      const result = await transcribeVideo({ trimmed_id: state.source.trimmedId })
+      const result = await transcribeVideo(state.source.trimmedUrl ? { video_url: state.source.trimmedUrl } : { trimmed_id: state.source.trimmedId })
       if (result.segments?.length) {
         dispatch({ type: 'applyAsrTranscript', segments: result.segments })
         toast(`ASR 已识别 ${result.segments.length} 段口播（含画外音）`)
@@ -499,11 +524,11 @@ function StrategyReport() {
   }
 
   useEffect(() => {
-    if (asrRepairStarted.current || !state.source.trimmedId || j.segments.some(seg => seg.asr_text?.trim())) return
+    if (asrRepairStarted.current || (!state.source.trimmedId && !state.source.trimmedUrl) || j.segments.some(seg => seg.asr_text?.trim())) return
     asrRepairStarted.current = true
     repairAsr()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.source.trimmedId])
+  }, [state.source.trimmedId, state.source.trimmedUrl])
   const hooks = j.strategy?.attention_hooks || { pre_roll: '', mid_roll: '', end_roll: '' }
   const analysisCards = [
     { key: 'selling', label: '核心卖点', kicker: 'VALUE PROPOSITION', value: j.strategy?.core_selling_point || '—', tone: 'blue' },
@@ -537,6 +562,7 @@ function StrategyReport() {
           <div className="analysis-card-grid">
             {analysisCards.map(card => <article key={card.key} className={`analysis-card analysis-card--${card.tone}`}><span className="analysis-card__kicker">{card.kicker}</span><h4>{card.label}</h4><p>{card.value}</p></article>)}
           </div>
+          <section className="analysis-subjects"><div className="hook-card__head"><span className="strategy-eyebrow">SUBJECTS</span><h3>主要主体 · {state.subjects.length}</h3><p>解析出现的人物、商品、场景和其他主体，已关联到对应镜头。</p></div><div className="analysis-subject-grid">{state.subjects.map(subject => <article key={subject.id}><b>@{subject.name}</b><span>{subject.type === 'person' ? '人物' : subject.type === 'product' ? '商品' : subject.type === 'scene' ? '场景' : '其他'}</span><p>{subject.description || '待补充主体特征'}</p>{subject.voice && <small>音色：{subject.voice}</small>}</article>)}{!state.subjects.length && <div className="subject-analysis-empty">本次结果未识别到稳定的主要主体，可在主体库手动添加。</div>}</div><button className="chip" onClick={() => window.dispatchEvent(new Event('toushi:subjects'))}>打开主体库</button></section>
           <section className="hook-card"><div className="hook-card__head"><span className="strategy-eyebrow">ATTENTION SYSTEM</span><h3>吸睛钩子</h3><p>从开头留人，到中段维持注意力，再到结尾推动行动。</p></div><div className="hook-grid"><article><span className="hook-step">前贴 · 0–3s</span><h4>开场钩子</h4><p>{hooks.pre_roll || '—'}</p></article><article><span className="hook-step">中插 · 保持观看</span><h4>注意力转折</h4><p>{hooks.mid_roll || '—'}</p></article><article><span className="hook-step">尾贴 · 行动召唤</span><h4>转化收束</h4><p>{hooks.end_roll || '—'}</p></article></div></section>
           <section className="remake-card"><div className="remake-card__head"><span className="strategy-eyebrow">REMAKE BLUEPRINT</span><h3>复刻蓝图</h3></div><div className="remake-card__grid"><div><h4>不可丢锚点</h4><p>{(j.remake?.anchors || []).join(' / ') || '—'}</p></div><div><h4>可替换变量</h4><p>{(j.remake?.variables || []).join(' / ') || '—'}</p></div><div><h4>制作建议</h4><p>{(j.remake?.production_tips || []).join(' / ') || '—'}</p></div><div><h4>注意事项</h4><p>{(j.remake?.cautions || []).join(' / ') || '—'}</p></div></div></section>
         </section>
@@ -548,7 +574,7 @@ function StrategyReport() {
             const shot = state.shots[selectedSegment]
             const splitLabel = shot?.splitStatus === 'done' ? '原片已拆分' : shot?.splitStatus === 'failed' ? '拆分失败' : shot?.splitStatus === 'running' ? '拆分中' : '待拆分'
             const moveRail = (direction: -1 | 1) => shotRailRef.current?.scrollBy({ left: direction * 360, behavior: 'smooth' })
-            return <><div className="shot-focus"><div className="shot-focus__media"><span className="shot-focus__id">S{selectedSegment + 1}</span>{shot?.shotTrimmedId ? <video src={videoPreviewUrl(shot.shotTrimmedId)} controls playsInline preload="metadata" /> : <div className="shot-focus__placeholder">原片切片段</div>}</div><div className="shot-focus__detail"><div className="shot-focus__meta"><span className={`strategy-role-badge strategy-role-${seg.role}`}>{ROLE[seg.role] || seg.role}</span><span className="shot-focus__data">{seg.start}–{seg.end} · {seg.duration}s</span><span className="shot-focus__data">{seg.on_screen_text?.length ? '有字幕' : '无字幕'}</span><span className={`st-chip ${shot?.splitStatus === 'done' ? 'st-done' : shot?.splitStatus === 'failed' ? 'st-fail' : ''}`}><span className="st-dot" />{splitLabel}</span></div><div className="shot-focus__fields"><section><h4>ASR 原文 / 默认口播</h4><p className="strategy-shot-card__voice">{seg.asr_text || '无可识别口播'}</p></section><section><h4>画面</h4><p>{seg.visual || '—'}</p></section><section><h4>动作与运镜</h4><p>{seg.action || '—'}{seg.camera ? ` · ${seg.camera}` : ''}</p></section><section><h4>原片信息</h4><p>{seg.source_audio || '无原声描述'}{seg.on_screen_text?.length ? ` · 字幕：${seg.on_screen_text.join(' / ')}` : ''}</p></section><section><h4>本段作用</h4><p>{seg.role_note || '—'}</p></section></div>{shot?.splitError && <div className="rep-error">{shot.splitError}</div>}</div></div><div className="shot-thumb-rail"><button className="shot-rail-arrow shot-rail-arrow--left" aria-label="向左滑动缩略图" onClick={() => moveRail(-1)}>‹</button><div className="shot-carousel" ref={shotRailRef}>{j.segments.map((item, i) => { const itemShot = state.shots[i]; const src = itemShot?.shotTrimmedId ? videoPreviewUrl(itemShot.shotTrimmedId) : null; return <button key={`${item.index}-${item.start}`} className={`shot-carousel__item ${selectedSegment === i ? 'is-active' : ''}`} onClick={() => setSelectedSegment(i)}><div className="shot-carousel__media">{src ? <video src={src} muted playsInline preload="metadata" /> : <span>原片缩略图</span>}<b>S{i + 1}</b></div><div className="shot-carousel__meta"><strong>{ROLE[item.role] || item.role}</strong><em>{item.start}–{item.end}</em></div></button>})}</div><button className="shot-rail-arrow shot-rail-arrow--right" aria-label="向右滑动缩略图" onClick={() => moveRail(1)}>›</button></div></>
+            return <><div className="shot-focus"><div className="shot-focus__media"><span className="shot-focus__id">S{selectedSegment + 1}</span>{shot?.originalClipUrl || shot?.shotTrimmedId ? <video src={shot.originalClipUrl || videoPreviewUrl(shot.shotTrimmedId!)} controls playsInline preload="metadata" /> : <div className="shot-focus__placeholder">原片切片段</div>}</div><div className="shot-focus__detail"><div className="shot-focus__meta"><span className={`strategy-role-badge strategy-role-${seg.role}`}>{ROLE[seg.role] || seg.role}</span><span className="shot-focus__data">{seg.start}–{seg.end} · {seg.duration}s</span><span className="shot-focus__data">{seg.on_screen_text?.length ? '有字幕' : '无字幕'}</span><span className={`st-chip ${shot?.splitStatus === 'done' ? 'st-done' : shot?.splitStatus === 'failed' ? 'st-fail' : ''}`}><span className="st-dot" />{splitLabel}</span></div>{seg.subject_names?.length ? <div className="shot-subject-summary">{seg.subject_names.map(name => <span key={name}>@{name}</span>)}</div> : null}<div className="shot-focus__fields"><section><h4>ASR 原文 / 默认口播</h4><p className="strategy-shot-card__voice">{seg.asr_text || '无可识别口播'}</p></section><section><h4>画面</h4><p>{seg.visual || '—'}</p></section><section><h4>动作与运镜</h4><p>{seg.action || '—'}{seg.camera ? ` · ${seg.camera}` : ''}</p></section><section><h4>原片信息</h4><p>{seg.source_audio || '无原声描述'}{seg.on_screen_text?.length ? ` · 字幕：${seg.on_screen_text.join(' / ')}` : ''}</p></section><section><h4>本段作用</h4><p>{seg.role_note || '—'}</p></section></div>{shot?.splitError && <div className="rep-error">{shot.splitError}</div>}</div></div><div className="shot-thumb-rail"><button className="shot-rail-arrow shot-rail-arrow--left" aria-label="向左滑动缩略图" onClick={() => moveRail(-1)}>‹</button><div className="shot-carousel" ref={shotRailRef}>{j.segments.map((item, i) => { const itemShot = state.shots[i]; const src = itemShot?.originalClipUrl || (itemShot?.shotTrimmedId ? videoPreviewUrl(itemShot.shotTrimmedId) : null); return <button key={`${item.index}-${item.start}`} className={`shot-carousel__item ${selectedSegment === i ? 'is-active' : ''}`} onClick={() => setSelectedSegment(i)}><div className="shot-carousel__media">{src ? <video src={src} muted playsInline preload="metadata" /> : <span>原片缩略图</span>}<b>S{i + 1}</b></div><div className="shot-carousel__meta"><strong>{ROLE[item.role] || item.role}</strong><em>{item.start}–{item.end}</em></div></button>})}</div><button className="shot-rail-arrow shot-rail-arrow--right" aria-label="向右滑动缩略图" onClick={() => moveRail(1)}>›</button></div></>
           })()}
         </section>
       )}

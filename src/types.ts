@@ -13,6 +13,8 @@ export interface SourceVideo {
   objectUrl: string | null   // 上传后的可播放 URL
   rawId?: string             // 服务端缓存的原视频 id（上传/URL导入后拿到）
   trimmedId?: string         // 服务端 ffmpeg 裁剪后的小片段 id（分析/分镜拆分时的源）
+  rawUrl?: string            // 任务媒体中持久保存的上传原片
+  trimmedUrl?: string        // 任务媒体中持久保存的分析裁剪片段
 }
 
 export interface Crop { enabled: boolean; start: number; end: number }
@@ -33,6 +35,16 @@ export interface StrategySegment {
   voiceover_script: string
   role_note: string
   merge_reason: string
+  subject_names?: string[]       // 本段出现的主要主体，与 subjects[].name 对应
+}
+export type SubjectType = 'person' | 'product' | 'scene' | 'other'
+export interface StrategySubject {
+  name: string
+  type: SubjectType
+  description: string
+  voice_hint?: string
+  image_prompt?: string
+  segment_indices: number[]
 }
 export interface StrategySkillJson {
   meta: {
@@ -45,6 +57,7 @@ export interface StrategySkillJson {
     attention_hooks: { pre_roll: string; mid_roll: string; end_roll: string }
   }
   segments: StrategySegment[]
+  subjects?: StrategySubject[]
   remake: { anchors: string[]; variables: string[]; production_tips: string[]; cautions: string[] }
 }
 
@@ -53,6 +66,17 @@ export type ShotStatus = 'idle' | 'queued' | 'running' | 'done' | 'failed'
 export type SplitStatus = 'idle' | 'running' | 'done' | 'failed'
 export type AnalyzeStatus = 'idle' | 'running' | 'done' | 'failed'
 export interface RefImage { id: string; url: string; name: string; publicUrl?: string }
+export interface Subject {
+  id: string
+  name: string
+  type: SubjectType
+  description: string
+  voice: string
+  imagePrompt: string
+  images: RefImage[]             // 单个主体最多 3 张
+  recommended: boolean
+  source: 'analysis' | 'user'
+}
 export interface BatchState { mode: 'idle' | 'analyze' | 'generate'; queueIds: string[]; currentId?: string; stopped?: boolean }
 export type ShotDuration = 5 | 10 | 15
 export type ShotAspect = '9:16' | '16:9'
@@ -69,6 +93,7 @@ export interface Shot {
 
   // 分镜拆分产出（1.0 末尾与 2.0 开头共用同一状态）
   shotTrimmedId?: string          // 服务端小视频 id（本段原片片段，可播放/送分析）
+  originalClipUrl?: string        // 任务媒体中持久保存的本段原片
   splitStatus: SplitStatus
   splitError?: string
 
@@ -84,11 +109,16 @@ export interface Shot {
   aspectRatio: ShotAspect
   requiresImage: boolean
   refs: RefImage[]                 // 参考图，上限 9
+  subjectIds: string[]             // 本镜头已绑定主体
 
   // 生成结果
   status: ShotStatus
   progress: number
   videoUrl?: string
+  // Seedance 返回的公网地址，供 AI MediaKit 等外部服务读取；videoUrl 可指向本地归档副本。
+  sourceVideoUrl?: string
+  // 用于在 Seedance 签名地址过期后重新查询最新地址。
+  sourceVideoTaskId?: string
   generatedDuration?: number
   generationError?: string
   isMock?: boolean
@@ -137,6 +167,7 @@ export interface AppState {
   taskId?: string
   taskName: string
   productRefs: RefImage[]  // 应用于每个复刻任务的统一商品参考图
+  subjects: Subject[]      // 任务级主体库：人物/卡通形象/商品等
   batch: BatchState
   step: number             // 0..4 -> 1.0..5.0
   source: SourceVideo
