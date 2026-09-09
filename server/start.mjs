@@ -119,6 +119,7 @@ function sessionCookie(req, token, maxAge = AUTH_TTL_SECONDS) {
 function resolveFfmpegPath() {
   const candidates = [
     process.env.FFMPEG_PATH,
+    path.join(process.cwd(), 'node_modules', '@ffmpeg-installer', `${process.platform}-${process.arch}`, 'ffmpeg'),
     path.join(ROOT, 'node_modules', '@ffmpeg-installer', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'),
     '/opt/homebrew/bin/ffmpeg',
     '/usr/local/bin/ffmpeg',
