@@ -21,7 +21,27 @@ function atomicWrite(file, data) {
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
   fs.renameSync(tmp, file)
 }
-function sanitizeSnapshot(snapshot) {
+function sanitizeSnapshot(snapshot, id) {
+  // Provider URLs expire. Reuse an existing archive before returning or saving a task.
+  const archived = new Map()
+  if (safeId(id)) {
+    const dir = mediaTaskDir(id)
+    try {
+      for (const file of fs.readdirSync(dir).filter(file => file.endsWith('.source.json'))) {
+        try {
+          const asset = file.slice(0, -'.source.json'.length)
+          const metadata = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'))
+          if (metadata.source_url && fs.existsSync(path.join(dir, asset))) archived.set(metadata.source_url, taskMediaUrl(id, asset))
+        } catch {}
+      }
+    } catch {}
+  }
+  const restore = value => {
+    if (Array.isArray(value)) return value.map(restore)
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, /url$/i.test(key) && typeof item === 'string' ? archived.get(item) || item : restore(item)]))
+    return value
+  }
+  snapshot = restore(snapshot)
   const cloned = JSON.parse(JSON.stringify(snapshot || {}))
   if (cloned.toast) cloned.toast = null
   if (cloned.source?.objectUrl?.startsWith?.('blob:')) cloned.source.objectUrl = null
@@ -35,19 +55,19 @@ function sanitizeSnapshot(snapshot) {
 }
 export function createTask({ name = '未命名任务', snapshot = {} } = {}) {
   const id = makeId(); const now = new Date().toISOString()
-  const task = { id, name: String(name).slice(0, 80), createdAt: now, updatedAt: now, snapshot: sanitizeSnapshot(snapshot) }
+  const task = { id, name: String(name).slice(0, 80), createdAt: now, updatedAt: now, snapshot: sanitizeSnapshot(snapshot, id) }
   atomicWrite(taskFile(id), task)
   return task
 }
 export function getTask(id) {
   const safe = safeId(id); if (!safe || !fs.existsSync(taskFile(safe))) return null
-  try { return JSON.parse(fs.readFileSync(taskFile(safe), 'utf8')) } catch { return null }
+  try { const task = JSON.parse(fs.readFileSync(taskFile(safe), 'utf8')); task.snapshot = sanitizeSnapshot(task.snapshot, safe); return task } catch { return null }
 }
 export function listTasks() {
   try {
     return fs.readdirSync(TASK_DIR).filter(f => f.endsWith('.json')).map(f => {
       try {
-        const t = JSON.parse(fs.readFileSync(path.join(TASK_DIR, f), 'utf8'))
+        const t = getTask(f.slice(0, -5)); if (!t) return null
         return { id: t.id, name: t.name, createdAt: t.createdAt, updatedAt: t.updatedAt, step: t.snapshot?.step || 0, shots: t.snapshot?.shots?.length || 0, preview: t.snapshot?.compose?.renderedVideoUrl || t.snapshot?.shots?.find?.(s => s.videoUrl)?.videoUrl || null }
       } catch { return null }
     }).filter(Boolean).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
@@ -56,7 +76,7 @@ export function listTasks() {
 export function updateTask(id, { name, snapshot } = {}) {
   const task = getTask(id); if (!task) return null
   if (name != null) task.name = String(name).slice(0, 80)
-  if (snapshot != null) task.snapshot = sanitizeSnapshot(snapshot)
+  if (snapshot != null) task.snapshot = sanitizeSnapshot(snapshot, task.id)
   task.updatedAt = new Date().toISOString()
   atomicWrite(taskFile(task.id), task)
   return task

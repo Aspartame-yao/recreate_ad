@@ -1,96 +1,142 @@
-# DESIGN.md — 他山之石 · 全链路广告成片工具
+# 他山之石 · Midnight 深海蓝紫设计规范
 
-Design system of record. Read by `impeccable detect` to separate intentional
-system from drift. Product lane: **product** (app UI / workflow tool).
+版本：2026-09-08。此规范取代此前 Cobalt、荧光绿及水墨配色规范。
 
-## Voice & register
+[Figma：规范、组件、全流程](https://www.figma.com/design/HeQy3Vtz7ZSseuWXqNSq9E)
 
-Editorial-technical. Mono labels for machine metadata, a characterful grotesque
-for headings, a clean geometric sans for body. Quiet surfaces, thin rules,
-one cobalt accent. No gradients, no glassmorphism, no icon-tile-above-heading.
+## 设计方向
 
-## Typography
+深海蓝底色，蓝紫渐变主操作，青色辅助强调，轻玻璃表面。用稳定的层级组织复杂的视频工作流。欢迎页可以更有表现力；工作区优先保证表单、字幕、时间轴和视频内容的可读性。
 
-Distinctive faces, deliberately off the AI-slop monoculture
-(no Inter, Roboto, Space Grotesk, Geist, Plus Jakarta Sans, Fraunces).
+## 唯一颜色来源
 
-| Role    | Family              | Fallback                          |
-|---------|---------------------|-----------------------------------|
-| display | Bricolage Grotesque | PingFang SC, sans-serif           |
-| body    | Sora                | PingFang SC, Noto Sans SC, sans   |
-| mono    | Spline Sans Mono    | SF Mono, monospace                |
+`src/design-tokens.css` 定义语义变量，Figma 中的 `02 Semantic · Midnight` 对应 `--ds-*`。基础颜色在 `01 Primitives`，间距与圆角在 `03 Spacing & Radius`。组件代码只引用变量；不在单个页面定义新的品牌色。
 
-### Type ramp (documented steps, px)
+| 变量 | 值 | 用途 |
+| --- | --- | --- |
+| canvas | #080b18 | 页面背景、输入框 |
+| surface | #12172b | 卡片、侧栏、弹窗 |
+| surface-raised | #1a213b | 浮层、次按钮、内层区域 |
+| border / border-strong | #303b5c / #4b5b85 | 分区边框 / 控件边框 |
+| text | #f2f5ff | 标题、正文重点 |
+| text-secondary | #c0c9df | 正文 |
+| text-muted | #929fbd | 说明、元信息 |
+| accent | #a6b4ff | 链接、选中边框 |
+| blue / violet | #5868d9 / #7950c5 | 主操作渐变两端 |
+| cyan | #79dbe5 | 辅助强调、焦点 |
+| success | #72dcba | 成功 |
+| warning | #f4c980 | 警告 |
+| error | #ff8eaa | 失败、必填星号 |
 
-Micro/label tier and body tier are intentionally granular for a dense tool UI:
+保留 `--color-*` 作为现有组件的兼容别名，必须指向语义变量。透明色用 `color-mix()` 派生，不另建一套色值。
 
-`9, 9.5, 10, 10.5, 11, 11.5, 12, 12.5, 13, 13.5, 14, 14.5, 15, 16, 17, 18, 20, 22, 26, 32, 40`
+## 渐变的边界
 
-- 9–11.5 — mono metadata, tags, tick labels
-- 12–15 — body, controls, list rows
-- 16–20 — section titles, modal titles
-- 22–40 — stage titles, display numerals
+- 主按钮使用 `--gradient-primary`，蓝色过渡到紫色，白色字。
+- 选中步骤、重要的编辑区域使用 `--gradient-selected`，低透明度蓝紫渐变。
+- 卡片使用 `--gradient-glass`，只在同一深色表面层级内轻微变化。
+- 欢迎页可使用青色到蓝紫的标题渐变和局部光晕；光晕不可覆盖正文。
+- 视频预览保持近黑纯色，不给视频内容加滤镜、着色或发光。
+- 错误、警告区域用语义色的低透明背景，文字保留高对比度，不使用品牌渐变。
 
-### Weights
+## 字体与排版：macOS HIG 对齐
 
-- display: 400 / 500 / 600 / 700
-- body: 400 / 500 / 600
-- mono: 400 / 500 / 600
+参考 [Apple Typography](https://developer.apple.com/design/human-interface-guidelines/typography)、[Accessibility](https://developer.apple.com/design/human-interface-guidelines/accessibility) 与 [Layout](https://developer.apple.com/design/human-interface-guidelines/layout)。Apple 的原生 macOS 默认正文为 13 pt，默认控件尺寸为 28×28 pt；以下是本项目的 **CSS px 网页适配值**，并非声称所有间距都是 Apple 强制值。
 
-## Color
+网页使用 `-apple-system, BlinkMacSystemFont`，Mac 上呈现系统 SF 字体，中文回退苹方；其他系统使用其系统字体。普通按钮、标签和说明不使用等宽字体，不拉宽中文字距。仅时间码和时间轴数字使用等宽字体。
 
-Perceptual palette in OKLCH, theme **Cobalt**. All literals below are the
-intentional system (paper/ink neutrals, one cobalt accent, semantic ok/warn/err,
-graphite dark surfaces). Alpha variants of these hues are in-system.
+| 角色 | 字号 / 行高（CSS px） | 字重 |
+| --- | --- | --- |
+| 欢迎页营销标题 | 32–48 / 1.25 | 600 |
+| 工作区 Large Title | 26 / 32 | 600 |
+| 弹窗 Title 1 | 22 / 26 | 600 |
+| 分区 Title 2 | 17 / 22 | 600 |
+| 卡片 Title 3 | 15 / 20 | 600 |
+| 正文、按钮、输入框 | 13 / 20 | 400 / 500 |
+| 辅助说明 | 11 / 16 | 400 |
 
-### Neutrals (paper / ink / rule)
+中文正文行高从原生系统单行文字的 16pt 放宽至 20px，以适应较长的解析文案。Figma 使用对应的 SF Pro 文字样式；Figma 环境没有苹方，因此中文节点使用 Noto Sans SC 回退，并沿用相同字号/行高。首页标题必须为“看到同行广告爆了？5分钟复刻一个！”。
 
-- paper `oklch(98.5% 0.004 250)` · paper-2 `oklch(96.8% 0.005 250)`
-- ink `oklch(24% 0.02 258)` · ink-2 `oklch(34% 0.018 257)` · ink-3 `oklch(56% 0.015 257)`
-- rule `oklch(90% 0.008 255)` · rule-2 `oklch(82% 0.01 255)`
+## 间距、控件与布局
 
-### Accent (cobalt)
+按内容关系固定层级，不逐页随意调整：标签与字段间 6px，控件间 8px，组内字段间 16px，分区之间 24px；卡片内边距 20px，窄屏 16px。以上是项目采用的排版尺度。
 
-- accent `oklch(58% 0.20 256)` · accent-hover `oklch(52% 0.20 256)`
-- accent-soft `oklch(94% 0.04 256)` · accent-ink `oklch(99% 0.005 250)`
-- accent-2 (info, toast undo) `oklch(78% 0.14 200)`
+- 桌面主/次按钮及输入框常规高度 32px；重要提交按钮 36px；窄屏主要操作 40px，步骤触点 44px。
+- 控件圆角 8px，业务卡片圆角 12px；欢迎页保留品牌胶囊按钮。
+- 桌面顶栏 56px；侧栏每行 56px；正文与标题使用共同的左对齐线。
+- ≤ 960px 使用紧凑图标侧栏；≤ 680px 使用顶部步骤导航与单列内容。
+- 窄屏输入与长文字可换行，弹窗内部滚动；视频保留自身比例。
+- 主体缩略图固定 1:1，名称 13px、辅助信息 11px；上传和文生图操作紧邻图片。
 
-### Dark surfaces (code / editor screen / toast)
+## 组件与状态
 
-- graphite `oklch(22% 0.016 260)` · graphite-2 `oklch(28% 0.018 260)`
-- editor/preview scrim, playhead knobs, clip thumbs derive from graphite + alpha
+Figma 包含 Button、Input、Navigation、Status 变体集合及 Asset/Subject。组件实例使用变量、文字样式，主按钮使用共享渐变样式。
 
-### Semantic
+- **主按钮**：一个操作区优先一个主行动；hover 亮度提升，不能变化布局；disabled 45% 透明度并禁用点击。
+- **次按钮**：深色面、细边框；hover 边框强调。
+- **输入框**：纯色 canvas 底；focus 青色边框和外环；错误在邻近位置明确说明原因。
+- **导航**：当前步骤蓝紫选中背景，并设置 `aria-current="step"`；其他步骤仍可阅读。
+- **状态**：成功、处理中、错误分别配文字或图标，不只依赖颜色。失败保留重试入口。
+- **主体卡**：方形缩略图、名称、类型；点击打开主体设置。
+- **必填**：图片、主体名称、主体类型用红色星号。图片未上传或生成时不能保存。描述和音色选填。
+- **文生图**：先展开描述编辑区，再显式点击生成。编辑描述本身不调用模型。
+- **焦点**：青色 2px 外环；图标按钮有可访问名称；不移除键盘焦点。
 
-- ok `oklch(64% 0.15 150)` · warn `oklch(72% 0.15 75)` · err `oklch(62% 0.17 25)`
-- traffic-light dots (code card): r/y/g variants of err/warn/ok
+## 全流程应用
 
-Any hex that appears in the build is a compiled OKLCH-with-alpha of one of the
-hues above (cobalt 256, ink 258, ok 150, warn 75, err 25, info 200). Colors
-outside these hue families are drift and must be justified.
+1. 欢迎页：品牌、演示素材、渐变标题与快速开始；点击后进入鉴权。
+2. 登录：同一色系的独立卡片；错误在表单内提示；认证逻辑保持服务端会话。
+3. 视频反推：上传与链接两种入口；解析结果采用统一分析卡、标签、主体推荐和自然拆镜。
+4. 视频复刻：原片 / 生成结果对照；提示词、口播、主体绑定、参考图；当前镜头明确选中。
+5. 视频处理：原素材与处理结果分区；成功、进行中和失败状态一致，保留下载与重试入口。
+6. 合成成片：近黑预览区；时间轴与控件采用共享表面层级；播放头、裁剪范围和当前片段使用强调色。
+7. 封面标题：选中项统一蓝紫边框与低透明度背景；交付包使用主按钮。
+8. 任务库：继续现有任务；统一卡片、操作和空状态。
+9. 主体库：平台长期资产；方形图集；设置弹窗保留图片、名称、类型、描述、音色与推荐选项。
 
-## Rounded scale
+## 动效与可访问性
 
-`--r-hair: 2px` · `--r-btn: 6px` · `--r-card: 10px` · `--r-pill: 999px`
+hover 120–180ms，区域状态切换 240ms；使用 ease-out。尊重 `prefers-reduced-motion`，禁用非必要运动。文字和背景保持清晰对比；正文禁止放在强光晕上。移动端横向时间轴和镜头列表可以局部滚动，页面本身不得横向溢出。
 
-Also in system: 3–8px small chip/tag/menu radii derived between hair and card.
-Pill toggles use `--r-pill`. Nothing rounds at arbitrary off-scale values.
+## 文件职责与后续维护
 
-## Motion
+- `src/design-tokens.css`：颜色、字体、空间、圆角、动效和渐变的唯一变量源。
+- `src/tokens.css`：现有业务组件布局，旧色值已迁移到语义变量。
+- `src/design-system.css`：跨页面视觉规范和响应式规则。
+- `scripts/design/check.mjs`：检查颜色变量漂移及关键文字对比度。
+- `design/figma-manifest.json`：Figma 主要页面与组件节点，方便后续精确修改。
 
-Three named easings, never the browser default:
+新增组件先查 Figma 与现有样式；已有角色复用变量。新增语义变量时同步 Figma 和本规范。运行 `node scripts/design/check.mjs` 和 `npm run build`；检查桌面与窄屏、hover / focus / disabled / error 状态。生产发布按项目既有流程执行。
 
-- `--ease-out cubic-bezier(.22,.61,.36,1)`
-- `--ease-in cubic-bezier(.55,.06,.68,.19)`
-- `--ease-in-out cubic-bezier(.65,.05,.36,1)`
+## 整体排版 / 参考图网格化更新
 
-Durations: `--dur-1 120ms · --dur-2 180ms · --dur-3 240ms · --dur-4 360ms`.
-Progress fills animate via `transform: scaleX` (GPU), never `width`.
-Respects `prefers-reduced-motion`.
+- 欢迎页：左侧标题与主行动，右侧保留上一版叠放式视频轮播；下方三张能力卡。点击卡片、左右箭头或进度指示均可切换演示，保留原有切换动画。快速开始后触发登录鉴权。
+- 工作台：左侧集中品牌、新建、任务库、主体库和五步流程；顶部保留任务名称、账号、快捷操作和下一步。
+- 复刻：原片与生成结果并排，提示词编辑在旁，生成参数收拢到卡片底部；窄屏改为纵向。
+- 封面标题：宽屏双列，左侧封面、右侧标题与交付；1100px 以下单列。
+- 任务库：居中大弹窗，三列缩略图卡片；960px 以下两列，680px 以下单列。
+- 移动端：资产入口横排在步骤导航上方；保留可访问名称。短窗口侧栏内部滚动。
 
-## Anti-references (never reintroduce)
+## 反推与复刻模块
 
-- Inter / Space Grotesk / Geist / Fraunces as primary faces
-- purple→blue gradients, glassmorphism, neon glows
-- cards nested in cards; single thick colored side-border "tabs"
-- rounded-square icon tile stacked above every heading
+两页共用内容区左右边界、20px 模块间距与内边距，模块内部使用12px间距。反推结果按内容、主体、叙事节奏、复刻建议分组；分镜详情按口播、画面、动作等组织为卡片。复刻将通用素材并排展示，画面描述、口播、镜头主体与参考图独立成模块；窄屏顺序堆叠。标题使用简短中文，移除装饰性英文标签、花式字符与重复提示；保留必要的错误说明、状态和操作名称。首页轮播交互保持不变。
+
+装饰克制：不使用标题前圆点、状态圆点、标题下横线、导航选中竖线及文案前破折号。分区依靠留白和模块底色；选中状态依靠底色与文字。保留可交互的轮播指示、播放/生成进度、必填标记和输入控件边界。
+
+首页精简（按标注）：删除副标题、长介绍、功能补充文案、登录旁注、演示区说明与 LIVE 标签、底部能力卡和流程说明。只保留主标题、三个简短功能名、开始按钮与原有轮播；功能名横向排列，窄屏自动换行。
+
+## 全局控件与轨道规范
+
+- 上传和添加素材入口统一64×64px方框、12px圆角，只显示加号；用途由无障碍名称说明。
+- 同类标签统一32px最小高度、13px字号、8px圆角。主体与参考图共用一个模块，时长与比例共用视频设置模块。
+- 删除步骤计数、侧栏副文案、底部提示和页面解释性段落。保留字段名、容量限制、错误和运行状态。
+- 封面和标题模块在宽屏等高对齐，窄屏垂直排列。
+- 时间轴各轨道采用相同宽度，刻度最多约8段，窄屏仅轨道区域横向滚动。删除控件24px且始终可见。
+- 删除视频只移出合成轨道，支持恢复；合成和交付导出均排除这些视频。删除轨道内容使旧成片失效，防止继续交付旧结果。
+- 验证：`node scripts/tests/composition.mjs`、`node scripts/design/check.mjs`、`npm run build`。
+
+## 页面导航与复刻布局
+
+任务入口命名为“任务”；任务列表、主体库和主体编辑采用主内容区页面，不再覆盖为弹窗。主体库提供名称/描述搜索及人物、商品、场景、其他分类。页面标题与模块左边界一致，不展示自动保存提示。
+
+复刻左侧放大双视频，右侧依次为主体/图片、视频设置、并排的画面描述与口播。素材区仅一个加号，同时提供主体选择与图片上传。封面预览严格使用9:16或16:9画框并完整显示图片；移除交付包摘要卡，保留顶部和底部导出操作。

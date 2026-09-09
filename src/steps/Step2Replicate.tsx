@@ -323,18 +323,17 @@ export function Step2Replicate() {
   const locked = state.batch.mode !== "idle";
 
   return (
-    <div>
+    <div className="rep-workspace">
       <ShotSplitControl variant="workflow" />
+      <div className="rep-assets">
       <section className="subject-strip">
-        <div><div className="product-ref-title">主体库</div><div className="product-ref-note">AI 已从解析结果推荐主体。镜头会自动带入已绑定主体的形象、参考图和音色。</div></div>
-        <div className="subject-strip__items">{state.subjects.slice(0, 6).map(subject => <button className={`subject-strip-tile ${subject.recommended ? 'is-recommended' : ''}`} key={subject.id} onClick={() => window.dispatchEvent(new Event('toushi:subjects'))}><span>{subject.images[0] ? <img src={subject.images[0].url} alt="" /> : subject.name.slice(0, 1)}</span><b>{subject.name || '未命名'}</b></button>)}<button className="subject-strip-add" onClick={() => window.dispatchEvent(new Event('toushi:subjects'))}>+管理主体</button></div>
+        <div><div className="product-ref-title">主体库</div></div>
+        <div className="subject-strip__items">{state.subjects.slice(0, 6).map(subject => <button className={`subject-strip-tile ${subject.recommended ? 'is-recommended' : ''}`} key={subject.id} onClick={() => window.dispatchEvent(new Event('toushi:subjects'))}><span>{subject.images[0] ? <img src={subject.images[0].url} alt="" /> : subject.name.slice(0, 1)}</span><b>{subject.name || '未命名'}</b></button>)}<button aria-label="管理主体" className="subject-strip-add upload-square" onClick={() => window.dispatchEvent(new Event('toushi:subjects'))}>+</button></div>
       </section>
       <section className="product-ref-panel">
         <div>
-          <div className="product-ref-title">统一商品参考图</div>
-          <div className="product-ref-note">
-            一次上传，自动附加到每个分镜的图生视频任务；分镜卡可再补充镜头专属参考图。
-          </div>
+          <div className="product-ref-title">通用参考图</div>
+
         </div>
         <div className="product-ref-list">
           {state.productRefs.map((ref) => (
@@ -351,10 +350,10 @@ export function Step2Replicate() {
           ))}
           {state.productRefs.length < 9 && (
             <button
-              className="product-ref-add"
+              aria-label="上传通用参考图" className="product-ref-add upload-square"
               onClick={() => globalFileRef.current?.click()}
             >
-              +<span>上传商品图</span>
+              +
             </button>
           )}
           <input
@@ -370,6 +369,7 @@ export function Step2Replicate() {
           />
         </div>
       </section>
+      </div>
       <div className="rep-source-actions">
         <button
           className="chip"
@@ -385,15 +385,13 @@ export function Step2Replicate() {
             }
           }}
         >
-          ↑ 重新上传视频
+          重新上传视频
         </button>
       </div>
       <div className="rep-head">
         <div>
           <div className="rep-head__title">逐镜复刻</div>
-          <div className="rep-head__note">
-            选中一个镜头，在同一工作区对照原片、复刻结果与生成参数。
-          </div>
+
         </div>
         <div className="rep-batch-actions">
           {locked && (
@@ -408,7 +406,7 @@ export function Step2Replicate() {
           >
             {state.batch.mode === "analyze"
               ? `反推中 ${state.batch.currentId || ""}`
-              : `✦ 一键反推 ${analyzable.length}`}
+              : `批量分析 ${analyzable.length}`}
           </button>
           <button
             className="btn btn--primary"
@@ -417,9 +415,9 @@ export function Step2Replicate() {
           >
             {state.batch.mode === "generate"
               ? `生成中 ${state.batch.currentId || ""}`
-              : `▸ 一键生成 ${generatable.length}`}
+              : `批量生成 ${generatable.length}`}
           </button>
-          <span className="rep-head__count">{state.shots.length} SHOTS</span>
+          <span className="rep-head__count">{state.shots.length} 个镜头</span>
         </div>
       </div>
       {(() => {
@@ -518,7 +516,7 @@ function ReplicateShotRow({
         ? "分析中…"
         : shot.analyzeStatus === "failed"
           ? "分析失败 · 重试"
-          : "✦ 分析片段";
+          : "分析片段";
   return (
     <div className="panel rep-shot">
       <div className="rep-shot__grid">
@@ -557,24 +555,25 @@ function ReplicateShotRow({
                 ) : (
                   <span>等待生成</span>
                 )}
-              </div>
               {shot.videoUrl && (
-                <button
-                  className="rep-download"
+                <details className="player-menu"><summary aria-label="视频更多操作">⋯</summary><button
+                  className="player-download"
                   onClick={() => downloadMediaFile(shot.videoUrl!, `${shot.no}.mp4`).catch(e => toast(`下载失败：${String(e?.message || e).slice(0, 120)}`, { tone: 'warn' }))}
                 >
-                  ⇩ MP4
-                </button>
+                  下载视频
+                </button></details>
               )}
+              </div>
+
             </div>
           </div>
-          {shot.status !== "idle" && (
+          {shot.status === "running" && (
             <div className="prog rep-shot__progress">
               <i style={{ ["--p" as any]: shot.progress / 100 }} />
             </div>
           )}
         </div>
-        <div>
+        <div className="rep-editor">
           <div className="rep-shot__tools">
             <span className="tag rep-role">{ROLE[shot.role] || shot.role}</span>
             <button className="chip" onClick={onAnalyze} disabled={!canAnalyze}>
@@ -582,11 +581,11 @@ function ReplicateShotRow({
             </button>
             {shot.analyzeMd && (
               <button className="chip" onClick={() => setShowMd((v) => !v)}>
-                {showMd ? "收起" : "展开"} md
+                {showMd ? "收起分析" : "查看分析"}
               </button>
             )}
             {parsed?.name && (
-              <span className="rep-skill-name">← {parsed.name}</span>
+              <span className="rep-skill-name">{parsed.name}</span>
             )}
           </div>
           {shot.splitError && (
@@ -598,107 +597,8 @@ function ReplicateShotRow({
           {showMd && shot.analyzeMd && (
             <pre className="rep-md">{shot.analyzeMd}</pre>
           )}
-          <div className="prm-lb rep-field-label">
-            复刻生成 PROMPT（可编辑）
-          </div>
-          <textarea
-            className="edt rep-prompt"
-            value={shot.prompt}
-            placeholder="描述画面，需要固定主体时输入 @主体名"
-            onChange={(e) =>
-              dispatch({
-                type: "editShot",
-                id: shot.id,
-                patch: { prompt: e.target.value },
-              })
-            }
-            disabled={locked}
-          />
-          <div className="shot-subject-row">
-            <span className="prm-lb">镜头主体</span>
-            <div className="shot-subject-chips">{state.subjects.filter(subject => shot.subjectIds.includes(subject.id)).map(subject => <button key={subject.id} className="subject-chip is-bound" title="点击取消绑定" onClick={() => {
-              dispatch({ type: 'toggleShotSubject', shotId: shot.id, subjectId: subject.id })
-              dispatch({ type: 'editShot', id: shot.id, patch: { prompt: shot.prompt.replace(new RegExp(`@${subject.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'g'), '') } })
-            }}>@{subject.name} ×</button>)}<button className="rep-ref-add subject-bind-add" disabled={locked} onClick={() => setShowSubjects(v => !v)}>+</button></div>
-            {showSubjects && <div className="subject-picker">{state.subjects.filter(subject => !shot.subjectIds.includes(subject.id)).map(subject => <button key={subject.id} onClick={() => {
-              dispatch({ type: 'toggleShotSubject', shotId: shot.id, subjectId: subject.id })
-              if (!shot.prompt.includes(`@${subject.name}`)) dispatch({ type: 'editShot', id: shot.id, patch: { prompt: `@${subject.name} ${shot.prompt}` } })
-              setShowSubjects(false)
-            }}><span>{subject.images[0] ? <img src={subject.images[0].url} alt="" /> : subject.name.slice(0, 1)}</span><b>@{subject.name}</b><small>{subject.recommended ? '默认推荐' : subject.description.slice(0, 24)}</small></button>)}{!state.subjects.length && <button onClick={() => window.dispatchEvent(new Event('toushi:subjects'))}>+先去主体库添加主体</button>}</div>}
-          </div>
-          <div className="prm-lb rep-field-label rep-voice-label">
-            有声口播（可编辑）
-          </div>
-          <div className="rep-voice-row">
-            <textarea
-              className="edt rep-voice-input"
-              value={shot.voiceover}
-              placeholder="填写这段视频需要生成的口播内容"
-              onChange={(e) =>
-                dispatch({
-                  type: "editShot",
-                  id: shot.id,
-                  patch: { voiceover: e.target.value },
-                })
-              }
-              disabled={locked}
-            />
-            <span className="rep-voice-note">
-              ASR 原文直接进入生成，不由逐镜反推改写
-            </span>
-          </div>
-          <div className="rep-ref-row">
-            <span className="prm-lb">镜头参考图 {shot.refs.length}/9</span>
-            <div className="rep-refs">
-              {shot.refs.map((r) => (
-                <div key={r.id} className="rep-ref">
-                  <img src={r.url} alt={r.name} />
-                  <button
-                    disabled={locked}
-                    onClick={() =>
-                      dispatch({ type: "delShotRef", id: shot.id, refId: r.id })
-                    }
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-              {shot.refs.length < 9 && (
-                <button
-                  className="rep-ref-add"
-                  disabled={locked}
-                  onClick={() => fileRef.current?.click()}
-                >
-                  +
-                </button>
-              )}
-              <input
-                ref={fileRef}
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
-                multiple
-                hidden
-                onChange={(e) => {
-                  onUpload(e.target.files);
-                  e.target.value = "";
-                }}
-              />
-            </div>
-          </div>
-        </div>
-        <div className="rep-shot__meta">
-          <span className={`st-chip ${stCls}`}>
-            <span className="st-dot" />
-            {stLabel}
-          </span>
-          <span
-            className={`st-chip ${shot.splitStatus === "done" ? "st-done" : shot.splitStatus === "failed" ? "st-fail" : ""}`}
-          >
-            <span className="st-dot" />
-            {splitLabel}
-          </span>
-          {shot.requiresImage && <span className="rep-mode">推荐图生视频</span>}
-          <div className="rep-chips">
+          <section className="rep-settings" aria-label="视频设置"><span className="rep-module-title">视频设置</span>
+          <div className="rep-chips" role="group" aria-label="时长"><span className="setting-label">时长</span>
             {([5, 10, 15] as const).map((d) => (
               <button
                 key={d}
@@ -716,7 +616,7 @@ function ReplicateShotRow({
               </button>
             ))}
           </div>
-          <div className="rep-chips">
+          <div className="rep-chips" role="group" aria-label="画面比例"><span className="setting-label">比例</span>
             {(["9:16", "16:9"] as const).map((ar) => (
               <button
                 key={ar}
@@ -734,16 +634,113 @@ function ReplicateShotRow({
               </button>
             ))}
           </div>
+          </section>
+          <section className="rep-module rep-module--visual" aria-label="画面描述">
+          <label htmlFor={`prompt-${shot.id}`} className="rep-module-title">画面描述</label>
+          <textarea
+            id={`prompt-${shot.id}`}
+            className="edt rep-prompt"
+            value={shot.prompt}
+            placeholder="描述画面，需要固定主体时输入 @主体名"
+            onChange={(e) =>
+              dispatch({
+                type: "editShot",
+                id: shot.id,
+                patch: { prompt: e.target.value },
+              })
+            }
+            disabled={locked}
+          />
+          </section>
+          <section className="rep-module rep-module--subjects" aria-label="主体与参考图">
+          <div className="shot-subject-row">
+            <span className="prm-lb">主体 / 图片</span>
+            <div className="shot-subject-chips">{state.subjects.filter(subject => shot.subjectIds.includes(subject.id)).map(subject => <button key={subject.id} className="bound-subject-tile" disabled={locked} aria-label={`移除主体 ${subject.name}`} title={subject.name + '（点击移除）'} onClick={() => {
+              dispatch({ type: 'toggleShotSubject', shotId: shot.id, subjectId: subject.id })
+              dispatch({ type: 'editShot', id: shot.id, patch: { prompt: shot.prompt.replace(new RegExp(`@${subject.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'g'), '') } })
+            }}><span className="bound-subject-image">{subject.images[0] ? <img src={subject.images[0].url} alt="" /> : subject.name.slice(0, 1)}</span><span className="bound-subject-name">{subject.name}</span></button>)}<button aria-label="添加主体或图片" className="rep-ref-add subject-bind-add" disabled={locked} onClick={() => setShowSubjects(v => !v)}>+</button></div>
+            {showSubjects && <div className="subject-picker"><button onClick={() => { setShowSubjects(false); fileRef.current?.click() }}>上传图片</button>{state.subjects.filter(subject => !shot.subjectIds.includes(subject.id)).map(subject => <button key={subject.id} onClick={() => {
+              dispatch({ type: 'toggleShotSubject', shotId: shot.id, subjectId: subject.id })
+              if (!shot.prompt.includes(`@${subject.name}`)) dispatch({ type: 'editShot', id: shot.id, patch: { prompt: `@${subject.name} ${shot.prompt}` } })
+              setShowSubjects(false)
+            }}><span>{subject.images[0] ? <img src={subject.images[0].url} alt="" /> : subject.name.slice(0, 1)}</span><b>@{subject.name}</b><small>{subject.recommended ? '默认推荐' : subject.description.slice(0, 24)}</small></button>)}{!state.subjects.length && <button onClick={() => window.dispatchEvent(new Event('toushi:subjects'))}>去主体库添加</button>}</div>}
+          </div>
+          <div className="rep-ref-row">
+
+            <div className="rep-refs">
+              {shot.refs.map((r) => (
+                <div key={r.id} className="rep-ref">
+                  <img src={r.url} alt={r.name} />
+                  <button
+                    disabled={locked}
+                    onClick={() =>
+                      dispatch({ type: "delShotRef", id: shot.id, refId: r.id })
+                    }
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                multiple
+                hidden
+                onChange={(e) => {
+                  onUpload(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+            </div>
+          </div>
+          </section>
+          <section className="rep-module rep-module--voice" aria-label="口播">
+          <label htmlFor={`voice-${shot.id}`} className="rep-module-title">口播</label>
+          <div className="rep-voice-row">
+            <textarea
+              id={`voice-${shot.id}`}
+              className="edt rep-voice-input"
+              value={shot.voiceover}
+              placeholder="填写这段视频需要生成的口播内容"
+              onChange={(e) =>
+                dispatch({
+                  type: "editShot",
+                  id: shot.id,
+                  patch: { voiceover: e.target.value },
+                })
+              }
+              disabled={locked}
+            />
+
+          </div>
+          </section>
+
+        </div>
+        <div className="rep-shot__meta">
+          <span className={`st-chip ${stCls}`}>
+            <span className="st-dot" />
+            {stLabel}
+          </span>
+          <span
+            className={`st-chip ${shot.splitStatus === "done" ? "st-done" : shot.splitStatus === "failed" ? "st-fail" : ""}`}
+          >
+            <span className="st-dot" />
+            {splitLabel}
+          </span>
+          {shot.requiresImage && <span className="rep-mode">推荐图生视频</span>}
+
           <button
             className="btn btn--primary rep-generate"
             onClick={onGenerate}
             disabled={!canGenerate}
           >
             {shot.status === "done"
-              ? "↻ 再生成一版"
+              ? "再生成一版"
               : shot.status === "running"
                 ? "生成中…"
-                : "▸ 生成有声新视频"}
+                : "生成视频"}
           </button>
           {!canGenerate && shot.analyzeStatus !== "running" && (
             <span className="rep-lock">先完成片段反推</span>

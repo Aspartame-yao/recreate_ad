@@ -12,8 +12,8 @@ export function ShotSplitControl({ variant = 'summary', auto = false, silent = f
   const allSplit = total > 0 && done === total
 
   async function runSplit() {
-    if (!state.source.trimmedId && !state.source.trimmedUrl) { toast('请先在 1.0 完成视频裁剪', { tone: 'warn' }); return }
-    if (!total) { toast('请先在 1.0 完成整片反推', { tone: 'warn' }); return }
+    if (!state.source.trimmedId && !state.source.trimmedUrl) { toast('请先完成视频裁剪', { tone: 'warn' }); return }
+    if (!total) { toast('请先完成整片反推', { tone: 'warn' }); return }
     const snapshot = state.shots.map(sh => ({ id: sh.id, start: sh.sourceStart, end: sh.sourceEnd }))
     dispatch({ type: 'startSplit' })
     try {
@@ -69,16 +69,12 @@ export function ShotSplitControl({ variant = 'summary', auto = false, silent = f
       <div className="split-control__top">
         <div>
           <div className="split-control__title">{variant === 'summary' ? '拆镜任务确认' : '分镜原片拆分'}</div>
-          <div className="split-control__note">
-            {variant === 'workflow'
-              ? '按 1.0 产出的时间轴，把裁剪参考片切成可独立反推的原片小视频。'
-              : `已识别 ${total} 个生成任务 · ${state.strategySkill?.meta?.total_duration_s || 0} 秒参考片`}
-          </div>
+
         </div>
         <div className="split-control__actions">
           <span className={`st-chip ${allSplit ? 'st-done' : failed ? 'st-fail' : state.splitting ? 'st-run' : ''}`}><span className="st-dot" />{text}</span>
           <button className="btn btn--primary" onClick={runSplit} disabled={state.splitting || !total || !state.source.trimmedId}>
-            {state.splitting ? '拆分中…' : done || failed ? '↻ 重新拆分' : '确认并拆分 →'}
+            {state.splitting ? '拆分中…' : done || failed ? '重新拆分' : '开始拆分'}
           </button>
         </div>
       </div>

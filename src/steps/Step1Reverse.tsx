@@ -10,7 +10,7 @@ import { extractJson } from '../lib/parseJson'
 import { archiveTaskMedia } from '../lib/taskApi'
 import { upsertAnalyzedSubjects } from '../lib/subjectApi'
 import { ShotSplitControl } from '../components/ShotSplitControl'
-import { ArrowRight, Link2, Play, Plus, RotateCcw, ShieldCheck, Sparkles, Upload as UploadIcon, X } from 'lucide-react'
+import { Link2, Play, Plus, RotateCcw, Sparkles, Upload as UploadIcon, X } from 'lucide-react'
 
 const CROP_MIN = TRIM_MIN_SEC   // 最短裁剪（3s）
 const CROP_MAX = TRIM_MAX_SEC   // 最长裁剪（180s）· 服务端 ffmpeg 真裁剪
@@ -141,8 +141,7 @@ function Upload({ onUploaded }: { onUploaded: () => void }) {
   return (
     <div className="up">
       <div className="up-head">
-        <div><div className="up-title">添加参考视频 <span className="req">*</span></div><p className="up-intro">选择一种方式开始，稍后可精确截取要分析的片段。</p></div>
-        <span className="up-security"><ShieldCheck size={13} />仅用于本次创作</span>
+        <div><div className="up-title">添加参考视频 <span className="req">*</span></div></div>
       </div>
 
       <div className="up-mode" role="tablist" aria-label="视频来源">
@@ -153,7 +152,7 @@ function Upload({ onUploaded }: { onUploaded: () => void }) {
         onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
 
       {sourceMode === 'file' ? (
-        <div className={`up-drop ${drag ? 'drag' : ''}`}
+        <div role="button" tabIndex={0} aria-label="上传参考视频" onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileRef.current?.click() } }} className={`up-drop ${drag ? 'drag' : ''}`}
           onClick={() => fileRef.current?.click()}
           onDragOver={e => { e.preventDefault(); setDrag(true) }}
           onDragLeave={() => setDrag(false)}
@@ -182,7 +181,7 @@ function Upload({ onUploaded }: { onUploaded: () => void }) {
         </div>
       )}
 
-      <div className="up-next-hint"><span>接下来</span><b>选择关键片段</b><ArrowRight size={13} /><b><Sparkles size={13} />AI 拆解视频</b></div>
+
     </div>
   )
 }
@@ -216,7 +215,7 @@ function Preview({ onRecrop, onReupload, onClear, onRun, trimmed }: {
           <span className="pv-badge">
             {enabled && trimmed ? `已裁剪 ${start.toFixed(1)}s ~ ${end.toFixed(1)}s` : `整段 ${state.source.durationS}s`}
           </span>
-          <button className="pv-badge pv-badge--btn" onClick={onRecrop}>✂ 重新裁剪</button>
+          <button className="pv-badge pv-badge--btn" onClick={onRecrop}>重新裁剪</button>
         </div>
       </div>
 
@@ -341,7 +340,7 @@ function CropModal({ onClose, onConfirm }: { onClose: () => void; onConfirm: () 
       <div className="modal-card crop-modal">
         <div className="modal-head">
           <div>
-            <div className="crop-modal-title">✂ 裁剪视频片段</div>
+            <div className="crop-modal-title">裁剪视频片段</div>
             <div className="crop-modal-sub">为获得最佳效果，请将参考视频裁剪到 {CROP_MIN}~{CROP_MAX} 秒的关键片段。</div>
           </div>
           <button className="modal-x" onClick={onClose} aria-label="关闭" disabled={trimming}><X size={17} /></button>
@@ -455,12 +454,12 @@ function Analyze() {
   if (state.analyzeErr && !state.analyzing && !state.analyzed) {
     return (
       <div className="analyze-box">
-        <div style={{ width: '100%', maxWidth: 620, marginBottom: 12, padding: '10px 14px', borderRadius: 'var(--r-btn)', background: 'var(--color-warn-soft, oklch(96% 0.05 40))', border: '1px solid var(--color-warn)', color: 'var(--color-warn)', fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.5, textAlign: 'left' }}>
+        <div style={{ width: '100%', maxWidth: 620, marginBottom: 12, padding: '10px 14px', borderRadius: 'var(--r-btn)', background: 'var(--color-warn-soft)', border: '1px solid var(--color-warn)', color: 'var(--color-warn)', fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.5, textAlign: 'left' }}>
           拆镜拉片分析失败：{state.analyzeErr.slice(0, 200)}
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn btn--ghost btn-with-icon" onClick={() => dispatch({ type: 'resetSource' })}><UploadIcon size={15} />重新上传视频</button>
-          <button className="btn btn--primary" onClick={runBreakdown}>重试分析 ▸</button>
+          <button className="btn btn--primary" onClick={runBreakdown}>重试分析</button>
         </div>
         {rawText && (
           <details style={{ marginTop: 14, width: '100%', maxWidth: 780, textAlign: 'left' }}>
@@ -541,40 +540,39 @@ function StrategyReport() {
     <div className="strategy-report">
       <ShotSplitControl auto silent />
       <div className="strat-head strategy-report__head">
-        <span className="strat-bar" />
         <div>
-          <div className="strat-title">整片反推完成 · {j.meta?.title}</div>
-          <div className="strat-sub">{j.meta?.segment_count ?? j.segments.length} 段 · 共 {j.meta?.total_duration_s}s · 套路：{j.meta?.routine}</div>
+          <div className="strat-title">{j.meta?.title || '视频分析'}</div>
+          <div className="strat-sub">{j.meta?.segment_count ?? j.segments.length} 段 · 共 {j.meta?.total_duration_s}s</div>
         </div>
         <div className="strategy-head-actions"><button className="btn btn--ghost btn--sm btn-with-icon" onClick={repairAsr} disabled={asrRepairing}>{!asrRepairing && <RotateCcw size={14} />}{asrRepairing ? '识别口播中…' : '重新识别口播'}</button><button className="btn btn--ghost btn--sm strategy-reupload btn-with-icon" onClick={() => { if (window.confirm('重新上传会清空当前反推、拆镜和生成结果，是否继续？')) dispatch({ type: 'resetSource' }) }}><UploadIcon size={14} />重新上传视频</button></div>
       </div>
 
       <div className="strategy-tabs" role="tablist" aria-label="反推结果视图">
-        <button role="tab" aria-selected={activeTab === 'film'} className={`strategy-tab ${activeTab === 'film' ? 'is-active' : ''}`} onClick={() => setActiveTab('film')}><span>01</span>成片分析</button>
-        <button role="tab" aria-selected={activeTab === 'shots'} className={`strategy-tab ${activeTab === 'shots' ? 'is-active' : ''}`} onClick={() => setActiveTab('shots')}><span>02</span>自然拆镜 <em>{j.segments.length} 段</em></button>
-        <button className="strategy-md-toggle" onClick={() => setShowMd(v => !v)}>{showMd ? '收起' : '查看'} 完整 md</button>
+        <button role="tab" aria-selected={activeTab === 'film'} className={`strategy-tab ${activeTab === 'film' ? 'is-active' : ''}`} onClick={() => setActiveTab('film')}>内容分析</button>
+        <button role="tab" aria-selected={activeTab === 'shots'} className={`strategy-tab ${activeTab === 'shots' ? 'is-active' : ''}`} onClick={() => setActiveTab('shots')}>分镜 <em>{j.segments.length} 段</em></button>
+        <button className="strategy-md-toggle" onClick={() => setShowMd(v => !v)}>{showMd ? '收起详情' : '查看详情'}</button>
       </div>
       {showMd && <pre className="strategy-md">{state.strategyMd}</pre>}
 
       {activeTab === 'film' ? (
         <section className="strategy-panel" aria-label="成片分析">
-          <div className="strategy-panel__intro"><div><span className="strategy-eyebrow">FILM ANALYSIS</span><h3>成片分析</h3></div><p>先读懂这条片的卖点、叙事与注意力设计，再把它转化为可复刻的表达逻辑。</p></div>
+
           <div className="analysis-card-grid">
-            {analysisCards.map(card => <article key={card.key} className={`analysis-card analysis-card--${card.tone}`}><span className="analysis-card__kicker">{card.kicker}</span><h4>{card.label}</h4><p>{card.value}</p></article>)}
+            {analysisCards.map(card => <article key={card.key} className={`analysis-card analysis-card--${card.tone}`}><h4>{card.label}</h4><p>{card.value}</p></article>)}
           </div>
-          <section className="analysis-subjects"><div className="hook-card__head"><span className="strategy-eyebrow">SUBJECTS</span><h3>主要主体 · {state.subjects.length}</h3><p>解析出现的人物、商品、场景和其他主体，已关联到对应镜头。</p></div><div className="analysis-subject-grid">{state.subjects.map(subject => <article key={subject.id}><b>@{subject.name}</b><span>{subject.type === 'person' ? '人物' : subject.type === 'product' ? '商品' : subject.type === 'scene' ? '场景' : '其他'}</span><p>{subject.description || '待补充主体特征'}</p>{subject.voice && <small>音色：{subject.voice}</small>}</article>)}{!state.subjects.length && <div className="subject-analysis-empty">本次结果未识别到稳定的主要主体，可在主体库手动添加。</div>}</div><button className="chip" onClick={() => window.dispatchEvent(new Event('toushi:subjects'))}>打开主体库</button></section>
-          <section className="hook-card"><div className="hook-card__head"><span className="strategy-eyebrow">ATTENTION SYSTEM</span><h3>吸睛钩子</h3><p>从开头留人，到中段维持注意力，再到结尾推动行动。</p></div><div className="hook-grid"><article><span className="hook-step">前贴 · 0–3s</span><h4>开场钩子</h4><p>{hooks.pre_roll || '—'}</p></article><article><span className="hook-step">中插 · 保持观看</span><h4>注意力转折</h4><p>{hooks.mid_roll || '—'}</p></article><article><span className="hook-step">尾贴 · 行动召唤</span><h4>转化收束</h4><p>{hooks.end_roll || '—'}</p></article></div></section>
-          <section className="remake-card"><div className="remake-card__head"><span className="strategy-eyebrow">REMAKE BLUEPRINT</span><h3>复刻蓝图</h3></div><div className="remake-card__grid"><div><h4>不可丢锚点</h4><p>{(j.remake?.anchors || []).join(' / ') || '—'}</p></div><div><h4>可替换变量</h4><p>{(j.remake?.variables || []).join(' / ') || '—'}</p></div><div><h4>制作建议</h4><p>{(j.remake?.production_tips || []).join(' / ') || '—'}</p></div><div><h4>注意事项</h4><p>{(j.remake?.cautions || []).join(' / ') || '—'}</p></div></div></section>
+          <section className="analysis-subjects"><div className="hook-card__head"><h3>主要主体 · {state.subjects.length}</h3></div><div className="analysis-subject-grid">{state.subjects.map(subject => <article key={subject.id}><b>@{subject.name}</b><span>{subject.type === 'person' ? '人物' : subject.type === 'product' ? '商品' : subject.type === 'scene' ? '场景' : '其他'}</span><p>{subject.description || '待补充主体特征'}</p>{subject.voice && <small>音色：{subject.voice}</small>}</article>)}{!state.subjects.length && <div className="subject-analysis-empty">本次结果未识别到稳定的主要主体，可在主体库手动添加。</div>}</div><button className="chip" onClick={() => window.dispatchEvent(new Event('toushi:subjects'))}>打开主体库</button></section>
+          <section className="hook-card"><div className="hook-card__head"><h3>叙事节奏</h3></div><div className="hook-grid"><article><span className="hook-step">开头</span><h4>如何开场</h4><p>{hooks.pre_roll || '—'}</p></article><article><span className="hook-step">中段</span><h4>如何展开</h4><p>{hooks.mid_roll || '—'}</p></article><article><span className="hook-step">结尾</span><h4>如何收尾</h4><p>{hooks.end_roll || '—'}</p></article></div></section>
+          <section className="remake-card"><div className="remake-card__head"><h3>复刻建议</h3></div><div className="remake-card__grid"><div><h4>保留的内容</h4><p>{(j.remake?.anchors || []).join(' / ') || '—'}</p></div><div><h4>可调整的内容</h4><p>{(j.remake?.variables || []).join(' / ') || '—'}</p></div><div><h4>制作建议</h4><p>{(j.remake?.production_tips || []).join(' / ') || '—'}</p></div><div><h4>注意事项</h4><p>{(j.remake?.cautions || []).join(' / ') || '—'}</p></div></div></section>
         </section>
       ) : (
         <section className="strategy-panel strategy-shot-workspace" aria-label="自然拆镜">
-          <div className="strategy-panel__intro"><div><span className="strategy-eyebrow">NATURAL SHOT BREAKDOWN</span><h3>自然拆镜</h3></div><p>以画面与 ASR 的突变判断边界。一个任务可以包含多个连续切镜，优先保持完整叙事。</p></div>
+
           {(() => {
             const seg = j.segments[Math.min(selectedSegment, j.segments.length - 1)]
             const shot = state.shots[selectedSegment]
             const splitLabel = shot?.splitStatus === 'done' ? '原片已拆分' : shot?.splitStatus === 'failed' ? '拆分失败' : shot?.splitStatus === 'running' ? '拆分中' : '待拆分'
             const moveRail = (direction: -1 | 1) => shotRailRef.current?.scrollBy({ left: direction * 360, behavior: 'smooth' })
-            return <><div className="shot-focus"><div className="shot-focus__media"><span className="shot-focus__id">S{selectedSegment + 1}</span>{shot?.originalClipUrl || shot?.shotTrimmedId ? <video src={shot.originalClipUrl || videoPreviewUrl(shot.shotTrimmedId!)} controls playsInline preload="metadata" /> : <div className="shot-focus__placeholder">原片切片段</div>}</div><div className="shot-focus__detail"><div className="shot-focus__meta"><span className={`strategy-role-badge strategy-role-${seg.role}`}>{ROLE[seg.role] || seg.role}</span><span className="shot-focus__data">{seg.start}–{seg.end} · {seg.duration}s</span><span className="shot-focus__data">{seg.on_screen_text?.length ? '有字幕' : '无字幕'}</span><span className={`st-chip ${shot?.splitStatus === 'done' ? 'st-done' : shot?.splitStatus === 'failed' ? 'st-fail' : ''}`}><span className="st-dot" />{splitLabel}</span></div>{seg.subject_names?.length ? <div className="shot-subject-summary">{seg.subject_names.map(name => <span key={name}>@{name}</span>)}</div> : null}<div className="shot-focus__fields"><section><h4>ASR 原文 / 默认口播</h4><p className="strategy-shot-card__voice">{seg.asr_text || '无可识别口播'}</p></section><section><h4>画面</h4><p>{seg.visual || '—'}</p></section><section><h4>动作与运镜</h4><p>{seg.action || '—'}{seg.camera ? ` · ${seg.camera}` : ''}</p></section><section><h4>原片信息</h4><p>{seg.source_audio || '无原声描述'}{seg.on_screen_text?.length ? ` · 字幕：${seg.on_screen_text.join(' / ')}` : ''}</p></section><section><h4>本段作用</h4><p>{seg.role_note || '—'}</p></section></div>{shot?.splitError && <div className="rep-error">{shot.splitError}</div>}</div></div><div className="shot-thumb-rail"><button className="shot-rail-arrow shot-rail-arrow--left" aria-label="向左滑动缩略图" onClick={() => moveRail(-1)}>‹</button><div className="shot-carousel" ref={shotRailRef}>{j.segments.map((item, i) => { const itemShot = state.shots[i]; const src = itemShot?.originalClipUrl || (itemShot?.shotTrimmedId ? videoPreviewUrl(itemShot.shotTrimmedId) : null); return <button key={`${item.index}-${item.start}`} className={`shot-carousel__item ${selectedSegment === i ? 'is-active' : ''}`} onClick={() => setSelectedSegment(i)}><div className="shot-carousel__media">{src ? <video src={src} muted playsInline preload="metadata" /> : <span>原片缩略图</span>}<b>S{i + 1}</b></div><div className="shot-carousel__meta"><strong>{ROLE[item.role] || item.role}</strong><em>{item.start}–{item.end}</em></div></button>})}</div><button className="shot-rail-arrow shot-rail-arrow--right" aria-label="向右滑动缩略图" onClick={() => moveRail(1)}>›</button></div></>
+            return <><div className="shot-focus"><div className="shot-focus__media"><span className="shot-focus__id">S{selectedSegment + 1}</span>{shot?.originalClipUrl || shot?.shotTrimmedId ? <video src={shot.originalClipUrl || videoPreviewUrl(shot.shotTrimmedId!)} controls playsInline preload="metadata" /> : <div className="shot-focus__placeholder">片段待拆分</div>}</div><div className="shot-focus__detail"><div className="shot-focus__meta"><span className={`strategy-role-badge strategy-role-${seg.role}`}>{ROLE[seg.role] || seg.role}</span><span className="shot-focus__data">{seg.start}–{seg.end} · {seg.duration}s</span><span className="shot-focus__data">{seg.on_screen_text?.length ? '有字幕' : '无字幕'}</span><span className={`st-chip ${shot?.splitStatus === 'done' ? 'st-done' : shot?.splitStatus === 'failed' ? 'st-fail' : ''}`}><span className="st-dot" />{splitLabel}</span></div>{seg.subject_names?.length ? <div className="shot-subject-summary">{seg.subject_names.map(name => <span key={name}>@{name}</span>)}</div> : null}<div className="shot-focus__fields"><section><h4>口播原文</h4><p className="strategy-shot-card__voice">{seg.asr_text || '无可识别口播'}</p></section><section><h4>画面</h4><p>{seg.visual || '—'}</p></section><section><h4>动作与运镜</h4><p>{seg.action || '—'}{seg.camera ? ` · ${seg.camera}` : ''}</p></section><section><h4>原片信息</h4><p>{seg.source_audio || '无原声描述'}{seg.on_screen_text?.length ? ` · 字幕：${seg.on_screen_text.join(' / ')}` : ''}</p></section><section><h4>本段作用</h4><p>{seg.role_note || '—'}</p></section></div>{shot?.splitError && <div className="rep-error">{shot.splitError}</div>}</div></div><div className="shot-thumb-rail"><button className="shot-rail-arrow shot-rail-arrow--left" aria-label="向左滑动缩略图" onClick={() => moveRail(-1)}>‹</button><div className="shot-carousel" ref={shotRailRef}>{j.segments.map((item, i) => { const itemShot = state.shots[i]; const src = itemShot?.originalClipUrl || (itemShot?.shotTrimmedId ? videoPreviewUrl(itemShot.shotTrimmedId) : null); return <button key={`${item.index}-${item.start}`} className={`shot-carousel__item ${selectedSegment === i ? 'is-active' : ''}`} onClick={() => setSelectedSegment(i)}><div className="shot-carousel__media">{src ? <video src={src} muted playsInline preload="metadata" /> : <span>原片缩略图</span>}<b>S{i + 1}</b></div><div className="shot-carousel__meta"><strong>{ROLE[item.role] || item.role}</strong><em>{item.start}–{item.end}</em></div></button>})}</div><button className="shot-rail-arrow shot-rail-arrow--right" aria-label="向右滑动缩略图" onClick={() => moveRail(1)}>›</button></div></>
           })()}
         </section>
       )}

@@ -4,7 +4,7 @@ import type { AudioClip } from '../types'
 import { downloadMediaFile, eraseSubtitleAndWait, exportDeliveryPackage, generateImage, generateTitles, queryVideo, renderComposition } from '../lib/museApi'
 import { extractJson } from '../lib/parseJson'
 import { archiveTaskMedia } from '../lib/taskApi'
-import { CheckCircle2, Download, Sparkles, X } from 'lucide-react'
+import { Download, Sparkles, X } from 'lucide-react'
 
 const uid = () => Math.random().toString(36).slice(2, 9)
 
@@ -65,7 +65,7 @@ export function Step3Process() {
   return (
     <div className="process-page">
       <div className="process-head">
-        <div><div className="process-title">原料视频</div><div className="process-note">这里保留 2.0 复刻生成的原始视频。选择需要处理的片段，再执行字幕擦除。</div></div>
+        <div><div className="process-title">原料视频</div></div>
         <div className="process-actions"><span className="process-count">已处理 {processed.length}/{targets.length}</span><button className="btn btn--primary" onClick={eraseAll} disabled={!targets.some(s => !s.processedVideoUrl) || Object.keys(busy).length > 0}>擦除全部选中</button></div>
       </div>
       <div className="process-source-grid">
@@ -84,7 +84,7 @@ export function Step3Process() {
         })}
       </div>
 
-      <div className="process-result-head"><div><div className="process-title">处理结果</div><div className="process-note">字幕擦除等后处理完成的视频集中在这里；4.0 合成成片将优先使用这些结果。</div></div><span className="process-count">{processed.length} 个输出</span></div>
+      <div className="process-result-head"><div><div className="process-title">处理结果</div></div><span className="process-count">{processed.length} 个输出</span></div>
       {processed.length ? <div className="process-result-grid">{processed.map(s => <article key={s.id} className="process-result-card"><div className="process-result-label">{s.no} · 已去字幕</div><video src={s.processedVideoUrl} controls playsInline preload="metadata" /><button className="media-download" onClick={() => downloadProcessed(s.processedVideoUrl!, s.no)}>⇩ 下载处理视频</button></article>)}</div> : <div className="process-empty">尚无处理结果。原料视频不会被覆盖，完成去字幕后会在此处出现独立的新视频。</div>}
     </div>
   )
@@ -95,7 +95,7 @@ const CLIP_SPEEDS = [0.5, 1, 1.5, 2]
 export function Step4Compose() {
   const { state, dispatch } = useStore()
   const toast = useToast()
-  const shots = state.shots
+  const shots = state.shots.filter(s => !state.compose.excludedShotIds?.includes(s.id))
   const audioRef = useRef<HTMLInputElement>(null)
   const playerRef = useRef<HTMLVideoElement>(null)
   const audioTrackRef = useRef<HTMLDivElement>(null)
@@ -165,7 +165,8 @@ export function Step4Compose() {
   }
 
   const fmt = (s: number) => `${String(Math.floor(Math.max(0, s) / 60)).padStart(2, '0')}:${String(Math.floor(Math.max(0, s)) % 60).padStart(2, '0')}`
-  const ticks = Array.from({ length: Math.ceil(totalDur) + 1 }, (_, i) => i)
+  const tickStep = Math.max(5, Math.ceil(totalDur / 8 / 5) * 5)
+  const ticks = Array.from({ length: Math.ceil(totalDur / tickStep) }, (_, i) => i * tickStep)
   const audioClips = state.compose.audios.filter(c => c.inTrack)
   const canRender = shots.length > 0 && shots.every(s => !!mediaUrl(s))
   const runRender = async () => {
@@ -313,8 +314,8 @@ export function Step4Compose() {
         <div className="ed-ruler-row">
           <div className="ed-thead" />
           <div className="ed-ruler" onClick={seekAt}>
-            {ticks.map(t => <span key={t} className="ed-tick" style={{ left: `${(t / totalDur) * 100}%` }}>{fmt(t)}</span>)}
-            <div className="ed-playhead" style={{ left: `${(playhead / totalDur) * 100}%` }}><span className="ed-playhead-knob" /></div>
+            {ticks.map(t => <span key={t} className="ed-tick" style={{ left: `${(t / (totalDur || 1)) * 100}%` }}>{fmt(t)}</span>)}
+            <div className="ed-playhead" style={{ left: `${(playhead / (totalDur || 1)) * 100}%` }}><span className="ed-playhead-knob" /></div>
           </div>
         </div>
         {/* 字幕轨：单开关；开启时可增删多段字幕，文本可编辑 */}
@@ -326,19 +327,19 @@ export function Step4Compose() {
           </div>
           <div className="ed-track" onClick={seekAt}>
             {state.compose.subtitleOn ? (
-              <div className="ed-clips" style={{ gap: 4 }}>
+              <div className="ed-clips ed-subs">
                 {state.compose.subs.length === 0
-                  ? <span className="ed-empty">字幕已开启 · 点右侧 + 增加字幕段</span>
+                  ? <span className="ed-empty">暂无字幕</span>
                   : state.compose.subs.map(sub => (
-                    <div key={sub.id} className="ed-clip sub" style={{ width: `${((sub.end - sub.start) / audioSpan) * 100}%` }} title={sub.text}>
+                    <div key={sub.id} className="ed-clip sub" style={{ left: `${(sub.start / audioSpan) * 100}%`, width: `${((sub.end - sub.start) / audioSpan) * 100}%` }} title={sub.text}>
                       <input className="ed-sub-input" value={sub.text} onClick={ev => ev.stopPropagation()}
                         onChange={e => dispatch({ type: 'editSub', id: sub.id, patch: { text: e.target.value } })} />
-                      <button className="ed-clip-x" onClick={ev => { ev.stopPropagation(); dispatch({ type: 'delSub', id: sub.id }) }}>×</button>
+                      <button className="ed-clip-x" aria-label="删除字幕" onPointerDown={ev => ev.stopPropagation()} onClick={ev => { ev.stopPropagation(); dispatch({ type: 'delSub', id: sub.id }) }}>×</button>
                     </div>
                   ))}
               </div>
               ) : <span className="ed-empty">字幕已关闭</span>}
-            <div className="ed-playhead" style={{ left: `${(playhead / totalDur) * 100}%` }} />
+            <div className="ed-playhead" style={{ left: `${(playhead / (totalDur || 1)) * 100}%` }} />
           </div>
           <div className="ed-track-add">
             {state.compose.subtitleOn && <button className="ed-add-btn" title="增加字幕" onClick={() => dispatch({ type: 'addSub' })}>+</button>}
@@ -359,11 +360,12 @@ export function Step4Compose() {
                   onDragStart={() => { dragRef.current.from = idx; setDragIdx(idx) }}
                   onDragOver={ev => { ev.preventDefault(); dragRef.current.to = idx; setOverIdx(idx) }}
                   onDrop={ev => { ev.preventDefault(); dragRef.current.to = idx }}
-                  onDragEnd={() => { const { from, to } = dragRef.current; if (from !== null && to !== null && from !== to) { const f=from,tt=to; dispatch({ type: 'reorderShots', from: f, to: tt }); toast('片段顺序已调', { undo: () => dispatch({ type: 'reorderShots', from: tt, to: f }) }) } dragRef.current = { from: null, to: null }; setDragIdx(null); setOverIdx(null) }}
+                  onDragEnd={() => { const { from, to } = dragRef.current; if (from !== null && to !== null && from !== to) { const f=from,tt=to; dispatch({ type: 'reorderShots', from: state.shots.findIndex(x => x.id === shots[f].id), to: state.shots.findIndex(x => x.id === shots[tt].id) }); toast('片段顺序已调', { undo: () => dispatch({ type: 'reorderShots', from: tt, to: f }) }) } dragRef.current = { from: null, to: null }; setDragIdx(null); setOverIdx(null) }}
                   onClick={ev => { ev.stopPropagation(); setSel(s.id) }}>
                   {mediaUrl(s)
                     ? <video src={mediaUrl(s)} className="ed-clip-thumb" muted preload="metadata" />
                     : s.refs[0] && <img src={s.refs[0].url} alt="" className="ed-clip-thumb" />}
+                  <button className="ed-clip-x" aria-label={`删除视频 ${s.no}`} onPointerDown={ev => ev.stopPropagation()} onClick={ev => { ev.stopPropagation(); setPlaying(false); setPlayhead(0); setSel(null); dispatch({ type: 'toggleCompositionShot', id: s.id }) }}>×</button>
                   <span className="ed-clip-label">{s.no}{s.speed !== 1 ? ` ${s.speed}×` : ''}</span>
                   {sel === s.id && (
                     <>
@@ -374,14 +376,14 @@ export function Step4Compose() {
                 </div>
               ))}
             </div>
-            <div className="ed-playhead" style={{ left: `${(playhead / totalDur) * 100}%` }} />
+            <div className="ed-playhead" style={{ left: `${(playhead / (totalDur || 1)) * 100}%` }} />
           </div>
         </div>
         {/* 音频轨：多段，绝对定位，可整体拖动、两端裁剪；末尾 + 增加音频 */}
         <div className="ed-track-row has-add">
           <div className="ed-thead">音频轨</div>
           <div className="ed-track ed-track-abs" onClick={e => { seekAt(e); setSelAudio(null) }} ref={audioTrackRef}>
-            {audioClips.length === 0 && <span className="ed-empty">暂无音频，点右侧 + 上传 / 生成</span>}
+            {audioClips.length === 0 && <span className="ed-empty">暂无音频</span>}
             {audioClips.map(c => {
               const len = c.trimEnd - c.trimStart
               return (
@@ -391,7 +393,7 @@ export function Step4Compose() {
                   onPointerDown={e => startAudioMove(c, audioTrackRef.current!)(e)}
                   onClick={ev => { ev.stopPropagation(); setSelAudio(c.id) }}>
                   <span className="ed-clip-label">{c.source === 'generate' ? '♪ ' : '⬆ '}{c.name}</span>
-                  <button className="ed-clip-x" onPointerDown={ev => ev.stopPropagation()} onClick={ev => { ev.stopPropagation(); dispatch({ type: 'delAudio', id: c.id }); if (selAudio === c.id) setSelAudio(null) }}>×</button>
+                  <button className="ed-clip-x" aria-label="删除音频" onPointerDown={ev => ev.stopPropagation()} onClick={ev => { ev.stopPropagation(); dispatch({ type: 'delAudio', id: c.id }); if (selAudio === c.id) setSelAudio(null) }}>×</button>
                   {selAudio === c.id && (
                     <>
                       <span className="ed-trim-h in" onPointerDown={e => { e.stopPropagation(); startAudioTrim(c, 'in', audioTrackRef.current!)(e) }} title="裁剪起点" />
@@ -401,7 +403,7 @@ export function Step4Compose() {
                 </div>
               )
             })}
-            <div className="ed-playhead" style={{ left: `${(playhead / totalDur) * 100}%` }} />
+            <div className="ed-playhead" style={{ left: `${(playhead / (totalDur || 1)) * 100}%` }} />
           </div>
           <div className="ed-track-add">
             <button className="ed-add-btn" title="增加音频" onClick={() => setAudioMenu(v => !v)}>+</button>
@@ -415,6 +417,7 @@ export function Step4Compose() {
         </div>
       </div>
 
+      {!!state.compose.excludedShotIds?.length && <div className="ed-restore">{state.shots.filter(s => state.compose.excludedShotIds?.includes(s.id)).map(s => <button className="chip" key={s.id} onClick={() => dispatch({ type: 'toggleCompositionShot', id: s.id })}>恢复 {s.no}</button>)}</div>}
       {/* 底部操作条 */}
       <div className="ed-toolbar">
         <input ref={audioRef} type="file" accept="audio/*" hidden onChange={e => { const f = e.target.files?.[0]; if (f) uploadAudio(f); e.target.value = '' }} />
@@ -524,7 +527,7 @@ export function Step5Cover() {
   const [titleErr, setTitleErr] = useState('')
   const [coverAspect, setCoverAspect] = useState<'9:16' | '16:9'>('9:16')
   const [exporting, setExporting] = useState(false)
-  const [exportUrl, setExportUrl] = useState('')
+  const [, setExportUrl] = useState('')
   const strategy = state.strategySkill
   const sourceShot = state.shots.find(s => s.processedVideoUrl || s.videoUrl)
   const coverPrompt = [
@@ -586,8 +589,9 @@ export function Step5Cover() {
     try {
       let renderedVideoUrl = state.compose.renderedVideoUrl
       if (!renderedVideoUrl) {
-        const usableShots = state.shots.filter(s => s.processedVideoUrl || s.videoUrl)
-        if (!usableShots.length || usableShots.length !== state.shots.length) throw new Error('仍有分镜没有可合成的视频')
+        const includedShots = state.shots.filter(s => !state.compose.excludedShotIds?.includes(s.id))
+        const usableShots = includedShots.filter(s => s.processedVideoUrl || s.videoUrl)
+        if (!usableShots.length || usableShots.length !== includedShots.length) throw new Error('仍有分镜没有可合成的视频')
         dispatch({ type: 'setRenderStatus', status: 'running' })
         const rendered = await renderComposition({
           clips: usableShots.map(s => {
@@ -625,17 +629,16 @@ export function Step5Cover() {
   return (
     <div className="cover-page">
       <section className="cover-section">
-        <div className="cover-section-head"><div><div className="col-label">封面</div><div className="cover-note">基于已反推的卖点、风格和首个分镜生成封面。</div></div><div className="cover-actions"><div className="chips">{(['9:16', '16:9'] as const).map(ar => <button key={ar} className={`chip chip-sm ${coverAspect === ar ? 'sel' : ''}`} onClick={() => setCoverAspect(ar)}>{ar}</button>)}</div><button className="btn btn--primary btn-with-icon" onClick={genCover} disabled={genC}>{!genC && <Sparkles size={15} />}{genC ? '正在生成…' : '生成封面'}</button></div></div>
+        <div className="cover-section-head"><div><div className="col-label">封面</div></div><div className="cover-actions"><div className="chips">{(['9:16', '16:9'] as const).map(ar => <button key={ar} className={`chip chip-sm ${coverAspect === ar ? 'sel' : ''}`} onClick={() => setCoverAspect(ar)}>{ar}</button>)}</div><button className="btn btn--primary btn-with-icon" onClick={genCover} disabled={genC}>{!genC && <Sparkles size={15} />}{genC ? '正在生成…' : '生成封面'}</button></div></div>
         {coverErr && <div className="cover-error">{coverErr}</div>}
-        <div className="cover-grid">{state.covers.map((c, k) => <div key={c.id} className={`cover ${state.cover === k ? 'sel' : ''}`} onClick={() => dispatch({ type: 'setCover', i: k })}><div className={`cap thumb-dark ${c.aspect === '16:9' ? 'is-wide' : ''}`}>{c.url ? <img src={c.url} alt={c.label} /> : <span>无图片</span>}</div><div className="lb">{c.label}<span>{state.cover === k ? '★ 已选' : ''}</span></div></div>)}</div>
-        {!state.covers.length && <div className="cover-empty">尚未生成封面。选择画幅后点击生成封面。</div>}
+        <div className="cover-grid">{state.covers.map((c, k) => <div key={c.id} className={`cover ${c.aspect === '16:9' ? 'cover--wide' : 'cover--portrait'} ${state.cover === k ? 'sel' : ''}`} onClick={() => dispatch({ type: 'setCover', i: k })}><div className={`cap thumb-dark ${c.aspect === '16:9' ? 'is-wide' : ''}`}>{c.url ? <img src={c.url} alt={c.label} /> : <span>无图片</span>}</div><div className="lb">{c.label}<span>{state.cover === k ? '已选' : ''}</span></div></div>)}</div>
+        {!state.covers.length && <div className="cover-empty">暂无封面</div>}
       </section>
       <section className="title-section">
-        <div className="cover-section-head"><div><div className="col-label">标题</div><div className="cover-note">基于整片策略与口播生成投放标题候选。</div></div><button className="chip btn-with-icon" onClick={genTitle} disabled={genT}>{!genT && <Sparkles size={14} />}{genT ? '正在生成…' : '生成标题'}</button></div>
+        <div className="cover-section-head"><div><div className="col-label">标题</div></div><button className="chip btn-with-icon" onClick={genTitle} disabled={genT}>{!genT && <Sparkles size={14} />}{genT ? '正在生成…' : '生成标题'}</button></div>
         {titleErr && <div className="cover-error">{titleErr}</div>}
-        {state.titles.map((t, k) => <div key={t.id} className={`title-opt ${state.title === k ? 'sel' : ''}`} onClick={() => dispatch({ type: 'setTitle', i: k })}><div className="t">{t.text}</div><div className="m">{t.ai ? '✦ ' : ''}{t.tag}</div></div>)}
+        {state.titles.map((t, k) => <div key={t.id} className={`title-opt ${state.title === k ? 'sel' : ''}`} onClick={() => dispatch({ type: 'setTitle', i: k })}><div className="t">{t.text}</div><div className="m">{t.tag}</div></div>)}
         {!state.titles.length && <div className="cover-empty">尚未生成标题。生成后可从多个候选中选择。</div>}
-        <div className="panel cover-delivery"><div className="col-label">交付包</div><div><CheckCircle2 size={13} /> 成片 {state.compose.renderedVideoUrl ? <button className="inline-download" onClick={() => downloadMediaFile(state.compose.renderedVideoUrl!, 'toushi-final.mp4')}>下载合成 MP4</button> : '导出时自动合成'}<br /><CheckCircle2 size={13} /> 封面 {state.covers[state.cover]?.label || '尚未选择'}<br /><CheckCircle2 size={13} /> 标题「{state.titles[state.title]?.text || '尚未选择'}」</div><button className="btn btn--primary btn-with-icon" onClick={exportPackage} disabled={exporting}>{!exporting && <Download size={15} />}{exporting ? '合成并打包中…' : '导出并下载交付包'}</button>{exportUrl && <button className="cover-package-link link-button" onClick={() => downloadMediaFile(exportUrl, 'toushi-delivery.zip')}><Download size={14} />再次下载交付包 ZIP</button>}</div>
       </section>
     </div>
   )

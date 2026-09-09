@@ -1,0 +1,38 @@
+/* Midnight / 深海蓝紫 · Figma semantic collection is mirrored here. */
+:root {
+  color-scheme: dark;
+  --ds-canvas:#080b18; --ds-surface:#12172b; --ds-surface-raised:#1a213b;
+  --ds-border:#303b5c; --ds-border-strong:#4b5b85;
+  --ds-text:#f2f5ff; --ds-text-secondary:#c0c9df; --ds-text-muted:#929fbd;
+  --ds-accent:#a6b4ff; --ds-blue:#5868d9; --ds-violet:#7950c5; --ds-cyan:#79dbe5;
+  --ds-success:#72dcba; --ds-warning:#f4c980; --ds-error:#ff8eaa;
+  --ds-black:#030610; --ds-white:#ffffff;
+  --color-paper:var(--ds-surface); --color-paper-2:var(--ds-surface-raised);
+  --color-ink:var(--ds-text); --color-ink-2:var(--ds-text-secondary); --color-ink-3:var(--ds-text-muted);
+  --color-rule:var(--ds-border); --color-rule-2:var(--ds-border-strong);
+  --color-accent:var(--ds-accent); --color-accent-ink:var(--ds-canvas);
+  --color-accent-soft:color-mix(in srgb,var(--ds-accent) 12%,transparent);
+  --color-accent-2:var(--ds-cyan); --color-graphite:var(--ds-black); --color-graphite-2:var(--ds-surface);
+  --color-warn-soft:color-mix(in srgb,var(--ds-warning) 10%,var(--ds-canvas));
+  --color-ok:var(--ds-success); --color-warn:var(--ds-warning); --color-err:var(--ds-error);
+  --font-body:-apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC','Microsoft YaHei',system-ui,sans-serif;
+  --font-display:var(--font-body);
+  --text-caption:11px; --text-callout:12px; --text-body:13px;
+  --text-subtitle:15px; --text-section:17px; --text-title:22px; --text-large-title:26px;
+  --leading-caption:16px; --leading-body:20px; --leading-section:22px; --leading-title:32px;
+  --control-height:32px; --control-height-large:36px;
+  --gap-control:var(--space-8); --gap-field:var(--space-16); --gap-section:var(--space-24);
+  --inset-panel:var(--space-20); --font-mono:'SFMono-Regular',Consolas,monospace;
+  --space-0:0px; --space-4:4px; --space-6:6px; --space-8:8px; --space-12:12px; --space-16:16px;
+  --space-20:20px; --space-24:24px; --space-32:32px; --space-40:40px; --space-48:48px; --space-64:64px;
+  --radius-8:8px; --radius-12:12px; --radius-20:20px; --radius-28:28px; --radius-999:999px;
+  --r-hair:4px; --r-btn:var(--radius-12); --r-card:var(--radius-20); --r-pill:var(--radius-999);
+  --ease-out:cubic-bezier(.22,.61,.36,1); --ease-in:cubic-bezier(.55,.06,.68,.19); --ease-in-out:cubic-bezier(.65,.05,.36,1);
+  --dur-1:120ms; --dur-2:180ms; --dur-3:240ms; --dur-4:360ms;
+  --gradient-primary:linear-gradient(115deg,var(--ds-blue),var(--ds-violet));
+  --gradient-selected:linear-gradient(110deg,color-mix(in srgb,var(--ds-blue) 22%,transparent),color-mix(in srgb,var(--ds-violet) 10%,transparent));
+  --gradient-glass:linear-gradient(145deg,color-mix(in srgb,var(--ds-surface-raised) 94%,transparent),color-mix(in srgb,var(--ds-surface) 96%,transparent));
+  --shadow-card:0 16px 48px color-mix(in srgb,var(--ds-black) 28%,transparent);
+  --shadow-glow:0 8px 28px color-mix(in srgb,var(--ds-violet) 25%,transparent);
+  --focus-ring:0 0 0 2px var(--ds-canvas),0 0 0 4px var(--ds-cyan);
+}

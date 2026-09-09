@@ -12,13 +12,6 @@ const FOOTS = [
   ['作品已经准备完成', '导出完整作品'],
 ]
 const MAX = STEPS.length - 1
-const DESCRIPTIONS = [
-  '上传一条参考视频，AI 会提炼它的钩子、节奏、文案和镜头结构。',
-  '逐镜调整创意与素材，让爆款方法自然变成你的品牌内容。',
-  '统一处理画面元素，为后续合成准备干净、可用的镜头。',
-  '在时间轴上整理视频、声音与字幕，完成最终叙事节奏。',
-  '生成封面与标题，整理成可直接发布的完整交付包。',
-]
 
 export function Stage() {
   const { state, dispatch } = useStore()
@@ -26,7 +19,6 @@ export function Stage() {
   const s = STEPS[i]
   const body = [<Step1Reverse />, <Step2Replicate />, <Step3Process />, <Step4Compose />, <Step5Cover />][i]
   const f = FOOTS[i]
-  const progress = ((i + 1) / STEPS.length) * 100
 
   const go = (d: number) => {
     const n = i + d
@@ -40,14 +32,13 @@ export function Stage() {
     <>
       <main className={`stage stage--${s.code.toLowerCase()}`}><div className="wrap">
         <div className="stage-head">
-          <div className="stage-heading-copy"><span className="stage-no">第 {i + 1} 步，共 {STEPS.length} 步</span><span className="stage-title">{s.nm}</span><p>{DESCRIPTIONS[i]}</p></div>
-          <span className="stage-state"><i /> 已自动保存</span>
+          <div className="stage-heading-copy"><span className="stage-title">{s.nm}</span></div>
+
         </div>
-        <div className="thick-rule"><i style={{ width: `${progress}%` }} /></div>
         {body}
       </div></main>
       <div className="foot"><div className="wrap"><div className="foot-in">
-        <div><div className="foot-txt">{f[0]}</div></div>
+
         <div style={{ display: 'flex', gap: 12 }}>
           {i > 0 && <button className="btn btn--ghost btn-with-icon" onClick={() => go(-1)}><ArrowLeft size={15} />上一步</button>}
           <button className="btn btn--primary btn-with-icon" style={{ padding: '11px 20px' }} onClick={() => go(1)}>{i === MAX ? <Download size={15} /> : null}{f[1]}{i !== MAX ? <ArrowRight size={15} /> : null}</button>
@@ -55,7 +46,7 @@ export function Stage() {
       </div></div></div>
       <div className="colophon"><div className="wrap"><div className="colophon-in">
         <span>他山之石 · AI 广告创作工作台</span>
-        <span>REVERSE · REPLICATE · PROCESS · COMPOSE · COVER</span>
+
       </div></div></div>
     </>
   )

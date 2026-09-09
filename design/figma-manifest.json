@@ -1,0 +1,11 @@
+{
+  "fileKey": "HeQy3Vtz7ZSseuWXqNSq9E",
+  "url": "https://www.figma.com/design/HeQy3Vtz7ZSseuWXqNSq9E",
+  "updated": "2026-09-08",
+  "foundations": "3:2",
+  "componentsBoard": "3:49",
+  "componentSets": {"Button":"8:165","Input":"8:166","Navigation":"8:167","Status":"8:168"},
+  "subjectCard": "5:234",
+  "screens": {"welcome":"8:81","login":"8:100","upload":"4:2","analysis":"8:115","replicate":"5:12","process":"5:72","compose":"5:131","cover":"5:178","subjects":"5:238","subjectEditor":"7:71","tasks":"7:103","mobile":"8:169"},
+  "notes": "Media uses the project's animation demo as representative design content; screens are design specifications, not production task snapshots."
+}

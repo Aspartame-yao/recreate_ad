@@ -100,6 +100,7 @@ export type Action =
   | { type: 'addAudio'; clip: AudioClip }
   | { type: 'toggleAudioTrack'; id: string }
   | { type: 'delAudio'; id: string }
+  | { type: 'toggleCompositionShot'; id: string }
   | { type: 'editAudio'; id: string; patch: Partial<AudioClip> }
   | { type: 'editSub'; id: string; patch: Partial<AppState['compose']['subs'][number]> }
   | { type: 'addSub' }
@@ -329,19 +330,23 @@ function reducer(s: AppState, a: Action): AppState {
       const arr = [...s.shots]; const [moved] = arr.splice(from, 1); arr.splice(to, 0, moved)
       return { ...s, shots: arr }
     }
-    case 'addAudio': return { ...s, compose: { ...s.compose, audios: [...s.compose.audios, a.clip] } }
+    case 'addAudio': return { ...s, compose: { ...s.compose, renderedVideoUrl: undefined, renderStatus: 'idle', audios: [...s.compose.audios, a.clip] } }
     case 'toggleAudioTrack': return { ...s, compose: { ...s.compose, audios: s.compose.audios.map(c => c.id === a.id ? { ...c, inTrack: !c.inTrack } : c) } }
-    case 'delAudio': return { ...s, compose: { ...s.compose, audios: s.compose.audios.filter(c => c.id !== a.id) } }
-    case 'editAudio': return { ...s, compose: { ...s.compose, audios: s.compose.audios.map(c => c.id === a.id ? { ...c, ...a.patch } : c) } }
-    case 'editSub': return { ...s, compose: { ...s.compose, subs: s.compose.subs.map(sub => sub.id === a.id ? { ...sub, ...a.patch } : sub) } }
+    case 'toggleCompositionShot': {
+      const excluded = s.compose.excludedShotIds || []
+      return { ...s, compose: { ...s.compose, renderedVideoUrl: undefined, renderStatus: 'idle', excludedShotIds: excluded.includes(a.id) ? excluded.filter(id => id !== a.id) : [...excluded, a.id] } }
+    }
+    case 'delAudio': return { ...s, compose: { ...s.compose, renderedVideoUrl: undefined, renderStatus: 'idle', audios: s.compose.audios.filter(c => c.id !== a.id) } }
+    case 'editAudio': return { ...s, compose: { ...s.compose, renderedVideoUrl: undefined, renderStatus: 'idle', audios: s.compose.audios.map(c => c.id === a.id ? { ...c, ...a.patch } : c) } }
+    case 'editSub': return { ...s, compose: { ...s.compose, renderedVideoUrl: undefined, renderStatus: 'idle', subs: s.compose.subs.map(sub => sub.id === a.id ? { ...sub, ...a.patch } : sub) } }
     case 'addSub': {
       const last = s.compose.subs[s.compose.subs.length - 1]
       const start = last ? last.end : 0
       const end = Math.min(totalShotsDuration(s), start + 5)
-      return { ...s, compose: { ...s.compose, subs: [...s.compose.subs, { id: uid(), start, end, text: '新字幕' }] } }
+      return { ...s, compose: { ...s.compose, renderedVideoUrl: undefined, renderStatus: 'idle', subs: [...s.compose.subs, { id: uid(), start, end, text: '新字幕' }] } }
     }
-    case 'delSub': return { ...s, compose: { ...s.compose, subs: s.compose.subs.filter(sub => sub.id !== a.id) } }
-    case 'toggleSubtitle': return { ...s, compose: { ...s.compose, subtitleOn: !s.compose.subtitleOn } }
+    case 'delSub': return { ...s, compose: { ...s.compose, renderedVideoUrl: undefined, renderStatus: 'idle', subs: s.compose.subs.filter(sub => sub.id !== a.id) } }
+    case 'toggleSubtitle': return { ...s, compose: { ...s.compose, renderedVideoUrl: undefined, renderStatus: 'idle', subtitleOn: !s.compose.subtitleOn } }
     case 'setRenderStatus': return { ...s, compose: { ...s.compose, renderStatus: a.status, renderedVideoUrl: a.url ?? s.compose.renderedVideoUrl, renderError: a.err } }
     // 5.0 封面/标题 AI 生成
     case 'addCover': return { ...s, covers: [...s.covers, a.cover], cover: s.covers.length }
@@ -354,7 +359,7 @@ function reducer(s: AppState, a: Action): AppState {
 }
 
 function totalShotsDuration(s: AppState): number {
-  return s.shots.reduce((sum, sh) => sum + Math.max(0.1, (sh.trimEnd - sh.trimStart) / sh.speed), 0)
+  return s.shots.filter(sh => !s.compose.excludedShotIds?.includes(sh.id)).reduce((sum, sh) => sum + Math.max(0.1, (sh.trimEnd - sh.trimStart) / sh.speed), 0)
 }
 
 const Ctx = createContext<{ state: AppState; dispatch: Dispatch<Action> } | null>(null)

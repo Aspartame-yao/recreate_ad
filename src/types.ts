@@ -151,6 +151,7 @@ export interface AudioClip {
 export interface SubClip { id: string; start: number; end: number; text: string }
 
 export interface Compose {
+  excludedShotIds?: string[]
   audios: AudioClip[]
   subs: SubClip[]
   subtitleOn: boolean   // 字幕总开关：打开则跟随音频轨文字

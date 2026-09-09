@@ -985,7 +985,9 @@ async function handleTaskArchive(req, res, taskId, body) {
   if (!source) return json(res, 400, { error: 'url required' })
   const work = path.join(os.tmpdir(), `toushi-archive-${genVideoId()}`)
   try {
-    await downloadMedia(absoluteMediaUrl(req, source), work)
+    const local = localMediaPath(source)
+    if (local) fs.copyFileSync(local, work)
+    else await downloadMedia(absoluteMediaUrl(req, source), work)
     const name = String(body?.name || path.basename(new URL(absoluteMediaUrl(req, source)).pathname) || 'asset.mp4')
     const saved = saveTaskMedia(taskId, name, fs.readFileSync(work))
     fs.writeFileSync(`${saved.path}.source.json`, JSON.stringify({
