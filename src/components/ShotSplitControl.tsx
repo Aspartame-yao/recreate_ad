@@ -7,7 +7,7 @@ export function ShotSplitControl({ variant = 'summary', auto = false, silent = f
   const { state, dispatch } = useStore()
   const toast = useToast()
   const total = state.shots.length
-  const done = state.shots.filter(s => s.splitStatus === 'done' && s.shotTrimmedId).length
+  const done = state.shots.filter(s => s.splitStatus === 'done' && s.shotTrimmedId && s.originalClipUrl).length
   const failed = state.shots.filter(s => s.splitStatus === 'failed').length
   const allSplit = total > 0 && done === total
 
@@ -20,8 +20,8 @@ export function ShotSplitControl({ variant = 'summary', auto = false, silent = f
       const r = await splitVideoSegments({ source_id: state.source.trimmedId, source_url: state.source.trimmedUrl, segments: snapshot.map(({ start, end }) => ({ start, end })) })
       const results = await Promise.all(snapshot.map(async (sh, i) => {
         const hit = r.results?.[i]
-        let originalClipUrl = ''
-        if (hit?.ok && hit.shot_trimmed_id && state.taskId) {
+        let originalClipUrl = hit?.original_clip_url || ''
+        if (!originalClipUrl && hit?.ok && hit.shot_trimmed_id && state.taskId) {
           try { originalClipUrl = (await archiveTaskMedia(state.taskId, videoPreviewUrl(hit.shot_trimmed_id), `${sh.id}-original.mp4`)).url }
           catch (e) { console.warn('[archive original clip]', e) }
         }
@@ -73,7 +73,7 @@ export function ShotSplitControl({ variant = 'summary', auto = false, silent = f
         </div>
         <div className="split-control__actions">
           <span className={`st-chip ${allSplit ? 'st-done' : failed ? 'st-fail' : state.splitting ? 'st-run' : ''}`}><span className="st-dot" />{text}</span>
-          <button className="btn btn--primary" onClick={runSplit} disabled={state.splitting || !total || !state.source.trimmedId}>
+          <button className="btn btn--primary" onClick={runSplit} disabled={state.splitting || !total || (!state.source.trimmedId && !state.source.trimmedUrl)}>
             {state.splitting ? '拆分中…' : done || failed ? '重新拆分' : '开始拆分'}
           </button>
         </div>

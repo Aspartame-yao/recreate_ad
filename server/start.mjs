@@ -698,7 +698,11 @@ async function handleVideoSplitSegments(req, res, body) {
   const segments = Array.isArray(body?.segments) ? body.segments : []
   if (!sourceId && !sourceUrl) return json(res, 400, { ok: false, error: 'source_id / source_url 不能为空' })
   if (!segments.length) return json(res, 400, { ok: false, error: 'segments 不能为空' })
-  const srcPath = resolveVideoPath(sourceId) || localMediaPath(sourceUrl)
+  let srcPath = resolveVideoPath(sourceId) || localMediaPath(sourceUrl)
+  if (!srcPath && /^https:\/\//.test(sourceUrl)) {
+    srcPath = path.join(VIDEO_CACHE_DIR, `${genVideoId()}.mp4`)
+    await downloadMedia(sourceUrl, srcPath)
+  }
   if (!srcPath) return json(res, 404, { ok: false, error: '源视频已过期或不存在，请重新上传/裁剪' })
   touchVideoFile(srcPath)
 
@@ -717,7 +721,7 @@ async function handleVideoSplitSegments(req, res, body) {
       await ffmpegTrim(srcPath, destPath, start, dur)
       const st = fs.statSync(destPath)
       if (st.size === 0) throw new Error('ffmpeg 输出为空')
-      results.push({ index: i, ok: true, shot_trimmed_id: shotId, size: st.size, duration: dur })
+      results.push({ index: i, ok: true, shot_trimmed_id: shotId, original_clip_url: await persistMedia(destPath), size: st.size, duration: dur })
     } catch (e) {
       try { fs.unlinkSync(destPath) } catch {}
       results.push({ index: i, ok: false, error: String(e?.message || e).slice(0, 200) })

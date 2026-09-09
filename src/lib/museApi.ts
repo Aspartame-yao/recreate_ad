@@ -104,7 +104,7 @@ export function analyzeShot(input: AnalyzeShotIn) {
 // —— 分镜拆分：按策略skill的 segments[{start,end}]（相对 source_id 这条视频自己的秒数）
 //    批量 ffmpeg 裁出每段独立小视频，返回每段的 shot_trimmed_id
 export interface SplitSegmentsIn { source_id?: string; source_url?: string; segments: { start: number; end: number }[] }
-export interface SplitSegmentsResult { index: number; ok: boolean; shot_trimmed_id?: string; size?: number; duration?: number; error?: string }
+export interface SplitSegmentsResult { index: number; ok: boolean; shot_trimmed_id?: string; original_clip_url?: string; size?: number; duration?: number; error?: string }
 export function splitVideoSegments(input: SplitSegmentsIn) {
   return post<{ ok: boolean; results: SplitSegmentsResult[] }>('/api/video/split-segments', input)
 }
