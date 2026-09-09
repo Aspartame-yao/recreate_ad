@@ -1,3 +1,4 @@
+import { blobConfigured, blobAccess, issueMediaUpload, persistMedia } from './blobStorage.mjs'
 // 生产启动器：同一端口同时提供 /api/* 后端 & /* 静态托管（dist/）
 import http from 'node:http'
 import fs from 'node:fs'
@@ -669,7 +670,11 @@ async function handleVideoTrim(req, res, body) {
   if (dur < TRIM_MIN_DURATION_SEC - 0.01 || dur > TRIM_MAX_DURATION_SEC + 0.01) {
     return json(res, 400, { ok: false, error: `裁剪时长应在 ${TRIM_MIN_DURATION_SEC}~${TRIM_MAX_DURATION_SEC} 秒之间` })
   }
-  const srcPath = resolveVideoPath(rawId) || localMediaPath(sourceUrl)
+  let srcPath = resolveVideoPath(rawId) || localMediaPath(sourceUrl)
+  if (!srcPath && /^https:\/\//.test(sourceUrl)) {
+    srcPath = path.join(VIDEO_CACHE_DIR, `${genVideoId()}.mp4`)
+    await downloadMedia(sourceUrl, srcPath)
+  }
   if (!srcPath) return json(res, 404, { ok: false, error: '原视频已过期或不存在，请重新上传' })
   touchVideoFile(srcPath)
   const trimmedId = genVideoId()
@@ -679,7 +684,7 @@ async function handleVideoTrim(req, res, body) {
   try { st = fs.statSync(destPath) } catch { return json(res, 500, { ok: false, error: 'ffmpeg 未生成输出文件' }) }
   if (st.size === 0) { try { fs.unlinkSync(destPath) } catch {}; return json(res, 500, { ok: false, error: 'ffmpeg 输出为空，请换一个视频' }) }
   console.log(`[video-trim] ok raw=${rawId} → trimmed=${trimmedId} ${start.toFixed(2)}s dur=${dur.toFixed(2)}s size=${st.size}B`)
-  return json(res, 200, { ok: true, trimmed_id: trimmedId, size: st.size, duration: dur, ttl_seconds: VIDEO_CACHE_TTL_MS / 1000 })
+  return json(res, 200, { ok: true, trimmed_id: trimmedId, trimmed_url: await persistMedia(destPath), size: st.size, duration: dur, ttl_seconds: VIDEO_CACHE_TTL_MS / 1000 })
 }
 
 // —— POST /api/video/split-segments  body:{source_id, segments:[{start,end}]} → 批量 ffmpeg 裁剪 → 每段一个 shot_trimmed_id
@@ -786,6 +791,8 @@ async function downloadMedia(url, dest) {
 function localMediaPath(value) {
   let pathname = ''
   try { pathname = new URL(String(value || ''), 'http://local').pathname } catch { return null }
+  const previewMatch = pathname.match(/^\/api\/video\/preview\/([A-Za-z0-9_-]+)$/)
+  if (previewMatch) return resolveVideoPath(previewMatch[1])
   const taskMatch = pathname.match(/^\/api\/task-media\/([A-Za-z0-9_-]{8,80})\/([^/]+)$/)
   if (taskMatch) return taskMediaPath(taskMatch[1], decodeURIComponent(taskMatch[2]))
   const subjectMatch = pathname.match(/^\/api\/subject-media\/([A-Za-z0-9_-]{8,80})\/([^/]+)$/)
@@ -989,6 +996,10 @@ async function handleTaskArchive(req, res, taskId, body) {
     if (local) fs.copyFileSync(local, work)
     else await downloadMedia(absoluteMediaUrl(req, source), work)
     const name = String(body?.name || path.basename(new URL(absoluteMediaUrl(req, source)).pathname) || 'asset.mp4')
+    if (blobConfigured()) {
+      const url = await persistMedia(work, name)
+      return json(res, 200, { ok: true, name, bytes: fs.statSync(work).size, url, public_url: url })
+    }
     const saved = saveTaskMedia(taskId, name, fs.readFileSync(work))
     fs.writeFileSync(`${saved.path}.source.json`, JSON.stringify({
       source_url: source,
@@ -1109,6 +1120,12 @@ async function api(req, res, p) {
   }
   if (!authReady()) return json(res, 503, { error: '站点鉴权尚未配置' })
   if (!sessionUser(req)) return json(res, 401, { error: '请先登录' })
+
+  if (p === '/api/storage/config' && req.method === 'GET') return json(res, 200, { enabled: blobConfigured(), access: blobAccess() })
+  if (p === '/api/storage/upload' && req.method === 'POST') {
+    try { return json(res, 200, await issueMediaUpload(req, await readBody(req), sessionUser(req))) }
+    catch (e) { return json(res, e.status || 400, { error: e.message }) }
+  }
 
   // —— 视频缓存 + 服务端 ffmpeg 裁剪（照搬 aimixer）：这些需在读 JSON body 前分流
   if (p === '/api/video/upload' && req.method === 'POST') return handleVideoUpload(req, res)

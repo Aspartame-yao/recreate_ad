@@ -69,33 +69,30 @@ function Upload({ onUploaded }: { onUploaded: () => void }) {
     v.preload = 'metadata'
     v.onloadedmetadata = async () => {
       const durationS = Math.round(v.duration || 0)
-      dispatch({
-        type: 'setNewSource',
-        source: {
+      const newSource = {
           name: f.name,
           sizeMB: +(f.size / 1024 / 1024).toFixed(1),
           durationS,
           resolution: v.videoWidth ? `${v.videoWidth}×${v.videoHeight}` : '未知',
           objectUrl: url,
           rawId: '', trimmedId: '',
-        },
-      })
+      }
       setUploading(true); setUpPct(0)
       try {
         const up = await uploadVideoRaw(f, { filename: f.name, onProgress: setUpPct })
-        let rawUrl = ''
-        if (state.taskId) {
+        let rawUrl = up.raw_url || ''
+        if (!rawUrl && state.taskId) {
           try { rawUrl = (await archiveTaskMedia(state.taskId, videoPreviewUrl(up.raw_id), `source-original${up.ext || '.mp4'}`)).url }
           catch (e) { console.warn('[archive source video]', e) }
         }
-        dispatch({ type: 'patchSource', source: { rawId: up.raw_id, rawUrl } })
+        dispatch({ type: 'setNewSource', source: { ...newSource, rawId: up.raw_id, rawUrl } })
+        onUploaded()
         toast(`${f.name} · ${(f.size / 1024 / 1024).toFixed(1)} MB · 已上传`)
       } catch (e: any) {
         toast('上传失败：' + String(e?.message || e).slice(0, 80), { tone: 'warn' })
       } finally {
         setUploading(false)
       }
-      onUploaded()
     }
     v.onerror = () => { toast('无法读取视频元数据，请换 mp4/mov', { tone: 'warn' }) }
     v.src = url
@@ -160,7 +157,7 @@ function Upload({ onUploaded }: { onUploaded: () => void }) {
           <div className="up-ic" aria-hidden><Plus size={24} strokeWidth={1.7} /></div>
           <div className="up-t">把视频拖到这里</div>
           <div className="up-s">或者 <strong>浏览电脑文件</strong></div>
-          <div className="up-specs"><span>MP4 / MOV / WebM</span><span>最长 15 分钟</span><span>最大 2GB</span></div>
+          <div className="up-specs"><span>MP4 / MOV / WebM</span><span>最长 15 分钟</span><span>最大 200MB</span></div>
         </div>
       ) : (
         <div className="up-link-panel">
@@ -303,24 +300,26 @@ function CropModal({ onClose, onConfirm }: { onClose: () => void; onConfirm: () 
 
   async function confirm() {
     if (span < CROP_MIN || span > winMax) { toast(`片段需在 ${CROP_MIN}~${winMax}s 之间`, { tone: 'warn' }); return }
-    let rawId = state.source.rawId
+    let rawId = state.source.rawId || ''
+    let rawUrl = state.source.rawUrl
     setTrimming(true)
     try {
-      if (!rawId) {
+      if (!rawId && !state.source.rawUrl) {
         if (!state.source.objectUrl) { toast('未检测到本地视频文件，请重新上传后再裁剪', { tone: 'warn' }); return }
         toast('未获取到已上传视频，正在重新上传…', { tone: 'warn' })
         try {
           const up = await uploadVideoRawFromBlobUrl(state.source.objectUrl, { filename: state.source.name })
           rawId = up.raw_id
-          dispatch({ type: 'patchSource', source: { rawId } })
+          rawUrl = up.raw_url || ''
+          dispatch({ type: 'patchSource', source: { rawId, rawUrl } })
         } catch (upErr: any) {
           toast('重新上传失败，无法裁剪：' + String(upErr?.message || upErr).slice(0, 80), { tone: 'warn' })
           return
         }
       }
-      const r = await trimVideoOnServer(rawId, start, end, state.source.rawUrl)
-      let trimmedUrl = ''
-      if (state.taskId) {
+      const r = await trimVideoOnServer(rawId, start, end, rawUrl)
+      let trimmedUrl = r.trimmed_url || ''
+      if (!trimmedUrl && state.taskId) {
         try { trimmedUrl = (await archiveTaskMedia(state.taskId, videoPreviewUrl(r.trimmed_id), 'source-trimmed.mp4')).url }
         catch (e) { console.warn('[archive trimmed video]', e) }
       }

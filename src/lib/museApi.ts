@@ -1,3 +1,4 @@
+import { upload as uploadBlob } from '@vercel/blob/client'
 // 前端 SDK：统一走同源 /api/muse/*，后端负责连接火山方舟与 AI MediaKit。
 // 部署时可通过 window.__MUSE_API_BASE__ 覆盖为 http://<cvm>:4322
 
@@ -119,9 +120,19 @@ export const TRIM_MAX_SEC = 180                        // 裁剪窗口最长（3
 export async function uploadVideoRaw(
   file: Blob,
   opts: { filename?: string; onProgress?: (pct: number) => void } = {},
-): Promise<{ raw_id: string; size: number; mime: string; ext: string }> {
+): Promise<{ raw_id: string; raw_url?: string; size: number; mime: string; ext: string }> {
   if (file.size > MAX_RAW_UPLOAD_BYTES) {
     throw new Error(`视频 ${(file.size / 1024 / 1024).toFixed(0)}MB 超过 ${(MAX_RAW_UPLOAD_BYTES / 1024 / 1024).toFixed(0)}MB 上限`)
+  }
+  const config = await get<{ enabled: boolean; access: 'public' | 'private' }>('/api/storage/config')
+  if (config.enabled) {
+    if (config.access !== 'public') throw new Error('媒体存储访问方式尚未配置完成')
+    const name = (opts.filename || 'video.mp4').replace(/[^a-zA-Z0-9._-]/g, '_')
+    const blob = await uploadBlob(`media/${crypto.randomUUID()}/${name}`, file, {
+      access: config.access, handleUploadUrl: BASE + '/api/storage/upload', multipart: true,
+      contentType: file.type || 'video/mp4', onUploadProgress: event => opts.onProgress?.(Math.round(event.percentage)),
+    })
+    return { raw_id: '', raw_url: blob.url, size: file.size, mime: file.type, ext: '.' + (name.split('.').pop() || 'mp4') }
   }
   const contentType = file.type || 'video/mp4'
   return await new Promise((resolve, reject) => {
@@ -134,7 +145,7 @@ export async function uploadVideoRaw(
       let d: any = {}
       try { d = JSON.parse(xhr.responseText) } catch {}
       if (xhr.status >= 200 && xhr.status < 300 && d?.raw_id) resolve(d)
-      else reject(Object.assign(new Error(d?.error || `上传失败 HTTP ${xhr.status}`), { status: xhr.status, body: d }))
+      else reject(Object.assign(new Error(d?.error || (xhr.status === 413 ? '视频超过线上上传入口限制，请启用直传存储后重试' : `上传失败 HTTP ${xhr.status}`)), { status: xhr.status, body: d }))
     }
     xhr.onerror = () => reject(new Error('上传网络错误'))
     xhr.send(file)
@@ -157,7 +168,7 @@ export function importVideoUrl(url: string) {
 
 // 服务端 ffmpeg 裁剪：raw_id + [start,end] → trimmed_id（3~120s）
 export function trimVideoOnServer(raw_id: string, start: number, end: number, source_url?: string) {
-  return post<{ ok: boolean; trimmed_id: string; size: number; duration: number }>('/api/video/trim', { raw_id, source_url, start, end })
+  return post<{ ok: boolean; trimmed_id: string; trimmed_url?: string; size: number; duration: number }>('/api/video/trim', { raw_id, source_url, start, end })
 }
 
 // 预览播放地址（支持 Range，可直接喂 <video src>）
