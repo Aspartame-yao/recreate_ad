@@ -216,7 +216,7 @@ body { font-size:var(--text-body); line-height:var(--leading-body); }
 
 /* Global control sizes and module alignment. */
 :root { --upload-size:64px; --tag-height:32px; }
-.app .upload-square,.app .rep-ref-add,.app .subject-strip-add,.app .product-ref-add,.subject-modal .subject-image-add.upload-square,.app .up-drop,.app .ed-add-btn {
+.app .upload-square,.app .rep-ref-add,.app .subject-strip-add,.app .product-ref-add,.subject-modal .subject-image-add,.app .up-drop,.app .ed-add-btn {
  width:var(--upload-size); height:var(--upload-size); min-width:var(--upload-size); min-height:var(--upload-size); max-width:var(--upload-size); aspect-ratio:1; padding:0; margin:0; display:inline-flex; align-items:center; justify-content:center; flex:0 0 var(--upload-size); border:1px dashed var(--ds-border-strong); border-radius:12px; background:var(--ds-surface); color:var(--ds-text-secondary); font:400 24px/1 var(--font-body); cursor:pointer;
 }
 .app .up-drop .up-ic { margin:0; background:none; border:0; box-shadow:none; }.app .up-drop .up-t,.app .up-drop .up-s,.app .up-drop .up-specs { display:none; }
@@ -304,3 +304,7 @@ body { font-size:var(--text-body); line-height:var(--leading-body); }
  .app .rep-module .rep-voice-row { display:flex; flex:1; min-height:0; }
 }
 @media(min-width:1201px) { .app .rep-shot__preview { margin-top:0; } }
+
+/* Subject asset actions share the platform upload tile dimensions. */
+.subject-modal .subject-images { align-items:flex-start; flex-wrap:wrap; }
+.subject-modal .subject-image-add:not(.upload-square) { flex-direction:column; gap:6px; font:400 12px/1.2 var(--font-body); }
