@@ -1,3 +1,4 @@
+import { remoteVideoAsDataUrl } from './videoInput.mjs'
 import { blobConfigured, blobAccess, issueMediaUpload, persistMedia } from './blobStorage.mjs'
 // 生产启动器：同一端口同时提供 /api/* 后端 & /* 静态托管（dist/）
 import http from 'node:http'
@@ -426,15 +427,16 @@ function inlineTrimmedVideo(trimmedId) {
   return `data:${mime};base64,${fs.readFileSync(fp).toString('base64')}`
 }
 
-// —— 统一承载优先级（reverse-video / breakdown-strategy / analyze-shot 三个多模态接口共用）：
-//   1) trimmed_id —— 服务端 ffmpeg 裁剪出的小片段，体积最小、最稳，优先内联
-//   2) name       —— 老 uploads 整段（兜底，可能较大），读盘转 base64 内联
-//   3) video_url  —— 第三方公网 URL，返回 null 交上游按 URL 原样抓取
-function resolveInlineMedia({ trimmed_id, name, video_url }) {
-  if (trimmed_id) return inlineTrimmedVideo(String(trimmed_id))
-  const ref = name || video_url
-  if (!ref) return null
-  return inlineLocalVideoAsDataUrl(ref)
+// 云端存储先由服务端读取，避免方舟反复跨区域抓取同一视频。
+async function resolveInlineMedia({ trimmed_id, name, video_url }) {
+  if (trimmed_id && resolveVideoPath(String(trimmed_id))) return inlineTrimmedVideo(String(trimmed_id))
+  for (const ref of [video_url, name]) {
+    if (!ref) continue
+    const local = inlineLocalVideoAsDataUrl(ref)
+    if (local) return local
+    if (/^https?:\/\//i.test(ref)) return remoteVideoAsDataUrl(ref, INLINE_MAX_BYTES)
+  }
+  throw Object.assign(new Error('视频已过期或不存在，请重新上传并裁剪'), { status: 404 })
 }
 
 function inlineTaskReferenceImage(ref) {
@@ -1251,7 +1253,7 @@ async function api(req, res, p) {
       assertReverseModel(model)
       // 承载优先级：trimmed_id → 本机 name → 第三方 video_url。视频通过方舟
       // Chat Completions messages[].content[].video_url 承载，模型固定为 Seed 2.1 Pro。
-      const inlined = resolveInlineMedia({ trimmed_id, name, video_url })
+      const inlined = await resolveInlineMedia({ trimmed_id, name, video_url })
       const data = await runReverseMedia('reverse-video', {
         video_url: inlined || video_url,
         prompt: prompt || '请对这段广告视频做拉片分析，输出：整体内容、组织逻辑、每一段的场景/人物/动作/运镜/文案（0.5秒粒度）、以及可复用的高光片段。用中文JSON输出。',
@@ -1265,7 +1267,7 @@ async function api(req, res, p) {
     if (p === '/api/muse/breakdown-strategy') {
       const { trimmed_id, video_url, name, model } = body
       assertReverseModel(model)
-      const inlined = resolveInlineMedia({ trimmed_id, name, video_url })
+      const inlined = await resolveInlineMedia({ trimmed_id, name, video_url })
       if (!inlined && !video_url) return json(res, 400, { error: 'trimmed_id / video_url / name required' })
       const mediaUrl = inlined || video_url
       let transcript = []
@@ -1329,7 +1331,7 @@ async function api(req, res, p) {
       const { trimmed_id, video_url } = body
       const localVideoPath = (trimmed_id ? resolveVideoPath(trimmed_id) : null) || localMediaPath(video_url)
       if (!localVideoPath) return json(res, 404, { error: '找不到原视频，请重新上传后识别' })
-      const mediaUrl = resolveInlineMedia({ trimmed_id, video_url })
+      const mediaUrl = await resolveInlineMedia({ trimmed_id, video_url })
       const rawSegments = await transcribeVideoWithWhisper(localVideoPath)
       const segments = await correctAsrWithVisual(mediaUrl, rawSegments).catch(err => {
         console.warn(`[asr] repair visual correction failed, keep audio transcript: ${err?.message || err}`)
@@ -1343,7 +1345,7 @@ async function api(req, res, p) {
     if (p === '/api/muse/analyze-shot') {
       const { trimmed_id, video_url, name, model, voiceover_hint } = body
       assertReverseModel(model)
-      const inlined = resolveInlineMedia({ trimmed_id, name, video_url })
+      const inlined = await resolveInlineMedia({ trimmed_id, name, video_url })
       if (!inlined && !video_url) return json(res, 400, { error: 'trimmed_id / video_url / name required' })
       const hint = voiceover_hint ? `\n本段口播由独立 ASR 锁定为：「${voiceover_hint}」。不得改写、删减或替换这段文字；只分析画面、动作、运镜和声音氛围，最终生成时由系统原样注入口播。` : ''
       const data = await runReverseMedia('analyze-shot', {
