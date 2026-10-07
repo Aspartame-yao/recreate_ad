@@ -1,4 +1,3 @@
-import { remoteVideoAsDataUrl } from './videoInput.mjs'
 import { blobConfigured, blobAccess, issueMediaUpload, persistMedia } from './blobStorage.mjs'
 // 生产启动器：同一端口同时提供 /api/* 后端 & /* 静态托管（dist/）
 import http from 'node:http'
@@ -20,7 +19,7 @@ import {
   querySubtitleErase,
   getMuseToken,
 } from './muse.mjs'
-import { BREAKDOWN_STRATEGY_SYSTEM_PROMPT_COMPACT, ANALYZE_SHOT_SYSTEM_PROMPT_COMPACT, ASR_TRANSCRIPTION_SYSTEM_PROMPT } from './skills.mjs'
+import { BREAKDOWN_STRATEGY_SYSTEM_PROMPT_COMPACT, ANALYZE_SHOT_SYSTEM_PROMPT_COMPACT } from './skills.mjs'
 import { createTask, deleteTask, getTask, listTasks, saveTaskMedia, taskMediaPath, taskMediaUrl, updateTask } from './taskStore.mjs'
 import { createSubject, deleteSubject, getSubject, listSubjects, saveSubjectMedia, subjectMediaPath, subjectMediaUrl, updateSubject, upsertAnalyzedSubjects } from './subjectStore.mjs'
 
@@ -427,14 +426,15 @@ function inlineTrimmedVideo(trimmedId) {
   return `data:${mime};base64,${fs.readFileSync(fp).toString('base64')}`
 }
 
-// 云端存储先由服务端读取，避免方舟反复跨区域抓取同一视频。
+// 本地缓存以内联方式提交；公网 URL 由方舟直接读取。整片分析只发起一次
+// 视频请求，避免同一 URL 被 ASR、校对、主分析连续读取而在第三次超时。
 async function resolveInlineMedia({ trimmed_id, name, video_url }) {
   if (trimmed_id && resolveVideoPath(String(trimmed_id))) return inlineTrimmedVideo(String(trimmed_id))
   for (const ref of [video_url, name]) {
     if (!ref) continue
     const local = inlineLocalVideoAsDataUrl(ref)
     if (local) return local
-    if (/^https?:\/\//i.test(ref)) return remoteVideoAsDataUrl(ref, INLINE_MAX_BYTES)
+    if (/^https?:\/\//i.test(ref)) return null
   }
   throw Object.assign(new Error('视频已过期或不存在，请重新上传并裁剪'), { status: 404 })
 }
@@ -566,48 +566,6 @@ async function correctAsrWithVisual(mediaUrl, transcript) {
   if (!corrected.length) return transcript
   console.log(`[asr] visual correction ok raw=${transcript.length} corrected=${corrected.length}`)
   return corrected
-}
-
-function removeAdjacentVoiceoverDuplicates(segments) {
-  const result = segments.map(seg => ({ ...seg }))
-  for (let i = 1; i < result.length; i++) {
-    const previous = String(result[i - 1].asr_text || '').trim().replace(/[，。！？；：,.!?]+$/g, '')
-    let current = String(result[i].asr_text || '').trim().replace(/^[，。！？；：,.!?]+/g, '')
-    let overlap = 0
-    for (let size = Math.min(previous.length, current.length); size >= 4; size--) {
-      if (previous.slice(-size) === current.slice(0, size)) { overlap = size; break }
-    }
-    if (!overlap) continue
-    current = current.slice(overlap).replace(/^[，。！？；：,.!?\s]+/g, '')
-    const cleaned = current && !/[。！？!?]$/.test(current) ? `${current}。` : current
-    result[i].asr_text = cleaned
-    result[i].voiceover_script = cleaned
-  }
-  return result
-}
-
-function applyAsrToStrategy(strategy, transcript) {
-  if (!transcript.length) return strategy
-  const assigned = strategy.segments.map((seg, segIndex) => {
-      const start = strategySeconds(seg.start)
-      const end = strategySeconds(seg.end)
-      const text = transcript
-        // ASR 时间片可能跨越镜头切点。按时间片中心点唯一归属，禁止同一句同时进入前后两段。
-        .filter(row => {
-          const midpoint = (row.start + row.end) / 2
-          return midpoint >= start && (midpoint < end || (segIndex === strategy.segments.length - 1 && midpoint <= end))
-        })
-        .map(row => String(row.text || '').trim().replace(/[，。！？；：,.!?]+$/g, ''))
-        .filter(Boolean)
-        .join('，')
-        .replace(/，{2,}/g, '，')
-        .replace(/，$/g, '')
-        .trim()
-      const punctuated = text && !/[。！？!?]$/.test(text) ? `${text}。` : text
-      const exact = punctuated || String(seg.asr_text || '').trim()
-      return { ...seg, asr_text: exact, voiceover_script: exact }
-    })
-  return { ...strategy, segments: removeAdjacentVoiceoverDuplicates(assigned) }
 }
 
 // —— POST /api/video/upload  (raw body，header X-Filename / Content-Type) → raw_id
@@ -1270,45 +1228,10 @@ async function api(req, res, p) {
       const inlined = await resolveInlineMedia({ trimmed_id, name, video_url })
       if (!inlined && !video_url) return json(res, 400, { error: 'trimmed_id / video_url / name required' })
       const mediaUrl = inlined || video_url
-      let transcript = []
-      const localVideoPath = trimmed_id ? resolveVideoPath(trimmed_id) : null
-      if (localVideoPath) {
-        try {
-          transcript = await transcribeVideoWithWhisper(localVideoPath)
-          console.log(`[asr] whisper ok segments=${transcript.length}`)
-        } catch (err) {
-          console.warn(`[asr] whisper failed, fallback to multimodal transcription: ${err?.message || err}`)
-        }
-      }
-      if (!transcript.length) {
-        const asrResult = await runReverseMedia('asr-transcription', {
-          video_url: mediaUrl,
-          system: ASR_TRANSCRIPTION_SYSTEM_PROMPT,
-          prompt: '请只转写这条视频音轨中的全部可辨人声。无论画面有没有字幕都要识别，严格按 JSON 输出。',
-          temperature: 0,
-          max_tokens: 4200,
-          response_format: { type: 'json_object' },
-          thinking: { type: 'disabled' },
-        }).catch(err => {
-          console.warn(`[asr] multimodal transcription failed: ${err?.message || err}`)
-          return null
-        })
-        const asrRaw = asrResult?.choices?.[0]?.message?.content ?? asrResult?.data?.choices?.[0]?.message?.content ?? ''
-        transcript = normalizeAsrJson(asrRaw)
-      }
-      if (transcript.length) {
-        transcript = await correctAsrWithVisual(mediaUrl, transcript).catch(err => {
-          console.warn(`[asr] visual correction failed, keep audio transcript: ${err?.message || err}`)
-          return transcript
-        })
-      }
-      const transcriptContext = transcript.length
-        ? `\n\n以下是专用 Whisper ASR 从原音轨识别出的逐字口播（含画外音）。拆镜必须参考这些时间戳；asr_text 必须从对应时间范围逐字复制，不得改写或遗漏：\n${transcript.map(row => `[${row.start.toFixed(2)}-${row.end.toFixed(2)}] ${row.text}`).join('\n').slice(0, 14000)}`
-        : '\n\n专用 ASR 未识别到人声；若视频中确实可听见口播，仍须尽力从音轨识别。'
       const data = await runReverseMedia('breakdown-strategy', {
         video_url: mediaUrl,
         system: BREAKDOWN_STRATEGY_SYSTEM_PROMPT_COMPACT,
-        prompt: `请对这条参考视频做拆镜拉片分析，严格按 system 里的 JSON 结构输出，不要任何多余文字。务必简洁，避免重复描述。${transcriptContext}`,
+        prompt: '请对这条参考视频做拆镜拉片分析，同时听取原音轨并逐字填写每段 asr_text。严格按 system 里的 JSON 结构输出，不要任何多余文字。务必简洁，避免重复描述。',
         temperature: 0.4,
         max_tokens: 5200,
         response_format: { type: 'json_object' },
@@ -1322,8 +1245,7 @@ async function api(req, res, p) {
         console.warn(`[reverse] invalid strategy JSON chars=${String(raw).length} preview=${String(raw).slice(0, 180).replace(/\s+/g, ' ')}`)
         return json(res, 422, { error: '模型返回的策略结构不完整，请重试分析', model: REVERSE_MODEL, raw: String(raw).slice(0, 1200) })
       }
-      normalized = applyAsrToStrategy(normalized, transcript)
-      console.log(`[reverse] normalized strategy segments=${normalized.segments.length} asr_segments=${transcript.length} raw_chars=${String(raw).length}`)
+      console.log(`[reverse] normalized strategy segments=${normalized.segments.length} raw_chars=${String(raw).length}`)
       return json(res, 200, setResponseContent(data, JSON.stringify(normalized)) )
     }
     // 独立 ASR 修复接口：用于旧任务或浏览器缓存中缺失口播的结果，无需重跑整片视觉反推。
